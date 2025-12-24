@@ -11,12 +11,15 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "Recommends a trade based on market analysis",
+            description: "STEP 5: Final step - Recommends a trade based on market analysis. MUST be called last. Use options from fetch_option_chain and trend from analyze_trend. Returns NO_TRADE if trend is 'avoid' or 'choppy'.",
             parameters: {
               type: "object",
               properties: {
                 options: { type: "array" },
-                trend: { type: "string" }
+                trend: {
+                  type: "string",
+                  description: "Market trend from analyze_trend: 'bullish', 'bearish', or 'avoid'"
+                }
               },
               required: %w[options trend]
             }
@@ -25,20 +28,54 @@ module Vyapari
       end
 
       def call(p)
-        return { action: "NO_TRADE" } if p["trend"] == "choppy"
+        trend = p["trend"] || p[:trend]
+        if %w[avoid choppy].include?(trend.to_s.downcase)
+          return { action: "NO_TRADE",
+                   reason: "Market trend is 'avoid' - choppy market conditions" }
+        end
 
-        pp p
-        opt = p["options"]
-        premium = opt["ltp"].to_f
+        # Extract options - can be hash (from fetch_option_chain) or array (from LLM)
+        opt = p["options"] || p[:options]
+
+        # Handle hash format from fetch_option_chain (has contracts array)
+        if opt.is_a?(Hash)
+          contracts = opt["contracts"] || opt[:contracts] || []
+          raise "No contracts available in options" if contracts.empty?
+
+          # Use first contract for entry
+          contract = contracts.first
+          premium = (contract["last_price"] || contract[:last_price] ||
+                     contract["average_price"] || contract[:average_price] || 0).to_f
+
+          raise "Invalid premium: #{premium}" if premium.zero?
+
+          security_id = contract["security_id"] || contract[:security_id]
+          side = (opt["side"] || opt[:side] || "CE").to_s.upcase
+        elsif opt.is_a?(Array) && !opt.empty?
+          # Handle array format (direct contracts)
+          contract = opt.first
+          premium = (contract["last_price"] || contract[:last_price] ||
+                     contract["average_price"] || contract[:average_price] || 0).to_f
+
+          raise "Invalid premium: #{premium}" if premium.zero?
+
+          security_id = contract["security_id"] || contract[:security_id]
+          side = "CE" # Default, should come from context
+        else
+          raise "Invalid options format: expected hash with contracts or array of contracts"
+        end
+
+        # Calculate position size (prevent division by zero)
+        quantity = Trading::Risk.position_size(premium)
 
         {
           action: "BUY",
-          security_id: opt["security_id"],
-          exchange_segment: opt["exchange_segment"],
+          side: side,
+          security_id: security_id,
           entry_price: premium,
           stop_loss_price: premium * 0.65,
           target_price: premium * 1.4,
-          quantity: Trading::Risk.position_size(premium)
+          quantity: quantity
         }
       end
     end

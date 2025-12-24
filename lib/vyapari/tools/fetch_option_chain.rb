@@ -14,13 +14,16 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "Fetches option chain data for index options (NIFTY, BANKNIFTY, etc.)",
+            description: "STEP 4: Fetches option chain data for index options. MUST be called after analyze_trend returns 'bullish' or 'bearish'. DO NOT call if trend is 'avoid'. Requires: symbol (from find_instrument), trend (from analyze_trend - must be 'bullish' or 'bearish'), and expiry (leave empty for auto-selection). DO NOT pass candles, exchange_segment, instrument, interval, or strike_price.",
             parameters: {
               type: "object",
               properties: {
                 symbol: { type: "string" },
                 expiry: { type: "string" },
-                trend: { type: "string", enum: %w[bullish bearish] }
+                trend: {
+                  type: "string",
+                  description: "Market trend from analyze_trend tool: 'bullish' or 'bearish'. Do not use 'avoid' - if trend is 'avoid', recommend NO_TRADE instead"
+                }
               },
               required: %w[symbol expiry trend]
             }
@@ -29,40 +32,64 @@ module Vyapari
       end
 
       def call(p)
-        # 1️⃣ Underlying index
-        underlying = DhanHQ::Models::Instrument.find("IDX_I", p["symbol"])
-        raise "Underlying not found" unless underlying
+        # Validate required parameters
+        symbol = p["symbol"] || p[:symbol]
+        trend = p["trend"] || p[:trend]
+        expiry = p["expiry"] || p[:expiry]
 
-        # Get expiry - use provided expiry or fetch nearest available
-        expiry = p["expiry"].to_s.strip
-        if expiry.empty?
-          # Fetch available expiries and use the nearest one
-          expiries = underlying.expiry_list || []
-          raise "No expiries available for #{p["symbol"]}" if expiries.empty?
+        raise ArgumentError, "symbol parameter is required and cannot be empty. Use the 'instrument' field from find_instrument result." if symbol.nil? || symbol.to_s.strip.empty?
+        raise ArgumentError, "trend parameter is required (must be 'bullish' or 'bearish')" if trend.nil? || trend.to_s.strip.empty?
 
-          # Check if first expiry has passed (after 4 PM on expiry day)
-          first_expiry = expiries.first
-          if expiry_passed?(first_expiry)
-            # Use second expiry if first has passed
-            raise "No valid expiries available for #{p["symbol"]}" if expiries.length < 2
+        # Normalize trend
+        trend = trend.to_s.downcase.strip
+        if trend == "avoid"
+          raise ArgumentError, "Cannot fetch option chain when trend is 'avoid'. Call recommend_trade with trend='avoid' instead to get NO_TRADE recommendation."
+        end
+        raise ArgumentError, "trend must be 'bullish' or 'bearish', got: #{trend}" unless %w[bullish bearish].include?(trend)
 
-            expiry = expiries[1]
-          else
-            expiry = first_expiry
-          end
-        elsif expiry_passed?(expiry)
-          # If provided expiry has passed, fetch available expiries and use next valid one
-          expiries = underlying.expiry_list || []
-          raise "No expiries available for #{p["symbol"]}" if expiries.empty?
+        # Get underlying_seg and underlying_scrip from context (injected by agent)
+        # For indices, always use IDX_I
+        underlying_seg = p["underlying_seg"] || p[:underlying_seg] || "IDX_I"
+        underlying_scrip = p["underlying_scrip"] || p[:underlying_scrip]
+
+        # If not provided, try to get from symbol (fallback)
+        if !underlying_scrip
+          symbol_str = symbol.to_s.upcase
+          underlying = DhanHQ::Models::Instrument.find("IDX_I", symbol_str)
+          raise "Underlying not found for symbol: #{symbol_str}" unless underlying
+          underlying_seg = "IDX_I"
+          underlying_scrip = underlying.security_id.to_i
+        else
+          underlying_scrip = underlying_scrip.to_i
+          raise "Invalid underlying_scrip: must be a number" if underlying_scrip.zero?
+        end
+
+        # Get expiry - use provided expiry (should be from context)
+        expiry = expiry.to_s.strip if expiry
+        raise "Missing expiry parameter" if expiry.nil? || expiry.empty?
+
+        # Validate expiry hasn't passed (if it has, should have been handled in fetch_expiry_list)
+        if expiry_passed?(expiry)
+          # Fetch available expiries and use next valid one
+          expiries = DhanHQ::Models::OptionChain.fetch_expiry_list(
+            underlying_seg: underlying_seg,
+            underlying_scrip: underlying_scrip
+          )
+          raise "No expiries available" if expiries.nil? || expiries.empty?
 
           # Find the next valid expiry after the provided one
           valid_expiries = expiries.reject { |e| expiry_passed?(e) }
-          raise "No valid expiries available for #{p["symbol"]}" if valid_expiries.empty?
+          raise "No valid expiries available" if valid_expiries.empty?
 
           expiry = valid_expiries.first
         end
 
-        chain = underlying.option_chain(expiry: expiry)
+        # Use OptionChain.fetch API (as shown in user's example)
+        chain = DhanHQ::Models::OptionChain.fetch(
+          underlying_seg: underlying_seg,
+          underlying_scrip: underlying_scrip,
+          expiry: expiry
+        )
 
         spot   = chain["last_price"].to_f
         oc     = chain["oc"]
@@ -83,12 +110,14 @@ module Vyapari
           end
 
         # 5️⃣ Side
-        side = p["trend"] == "bullish" ? "ce" : "pe"
+        side = trend == "bullish" ? "ce" : "pe"
+        raise "Invalid side calculated: #{side}" if side.nil? || side.empty?
 
         # 6️⃣ Extract contracts
         selected = [atm_strike, otm_strike].compact.map do |strike|
-          oc[format("%.6f", strike)][side]
-        end
+          strike_key = format("%.6f", strike)
+          oc[strike_key]&.dig(side)
+        end.compact
 
         {
           spot_price: spot,

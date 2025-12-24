@@ -7,7 +7,11 @@ module Vyapari
       def self.position_size(premium)
         # Calculate position size based on premium
         # This is a placeholder - implement actual risk calculation logic
-        (10_000 / premium).to_i
+        return 0 if premium.nil? || premium.zero? || premium < 0
+
+        size = (10_000 / premium).to_i
+        # Cap at reasonable maximum (e.g., 50 lots)
+        [size, 50].min
       end
 
       def initialize(max_position_size: nil, stop_loss_percentage: nil)

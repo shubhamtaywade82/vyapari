@@ -11,7 +11,7 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "Finds trading instrument by exchange segment and symbol. Valid exchange_segment values: NSE_FNO, NSE_EQ, BSE_FNO, BSE_EQ, NSE_CURRENCY, BSE_CURRENCY, MCX_COMM, IDX_I",
+            description: "STEP 1: Finds trading instrument by exchange segment and symbol. MUST be called first, ONE AT A TIME. For indices (NIFTY, BANKNIFTY, SENSEX), use exchange_segment='IDX_I'. For stocks, use NSE_EQ or BSE_EQ. Returns security_id, exchange_segment, and instrument (use this 'instrument' field for fetch_intraday_history).",
             parameters: {
               type: "object",
               properties: {
@@ -28,18 +28,26 @@ module Vyapari
       end
 
       def call(params)
-        exchange_segment = ExchangeSegmentHelper.normalize(params["exchange_segment"])
+        symbol = params["symbol"].to_s.upcase
+        exchange_segment = params["exchange_segment"].to_s
+
+        # Auto-correct common index symbols to use IDX_I
+        index_symbols = %w[NIFTY BANKNIFTY SENSEX NIFTY50 BANKNIFTY50]
+        exchange_segment = "IDX_I" if index_symbols.include?(symbol) && exchange_segment != "IDX_I"
+
+        exchange_segment = ExchangeSegmentHelper.normalize(exchange_segment)
 
         inst = DhanHQ::Models::Instrument.find(
           exchange_segment,
-          params["symbol"]
+          symbol
         )
 
         raise "Instrument not found" unless inst
 
         {
-          security_id: inst.security_id,
+          security_id: inst.security_id.to_s,
           exchange_segment: inst.exchange_segment,
+          instrument: inst.instrument || inst.instrument_type,
           instrument_type: inst.instrument_type
         }
       end

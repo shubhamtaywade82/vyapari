@@ -12,8 +12,21 @@ module Vyapari
         @period = period
       end
 
-      def calculate(_prices)
-        raise NotImplementedError
+      def calculate(prices)
+        return prices.last.to_f if prices.length < @period # Return last price if not enough data
+
+        # Calculate smoothing factor
+        multiplier = 2.0 / (@period + 1.0)
+
+        # Start with SMA for first value
+        ema = prices.first(@period).sum.to_f / @period
+
+        # Calculate EMA for remaining values
+        prices[@period..-1].each do |price|
+          ema = (price.to_f * multiplier) + (ema * (1.0 - multiplier))
+        end
+
+        ema.round(2)
       end
 
       private
