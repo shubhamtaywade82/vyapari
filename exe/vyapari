@@ -1,3 +1,39 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Use bundler to ensure correct gem versions
+begin
+  require "bundler/setup"
+rescue LoadError
+  # Bundler not available, continue without it
+end
+
+# Add lib to load path for development mode
+lib_path = File.expand_path("../lib", __dir__)
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
 
 require "vyapari"
+
+# Configure DhanHQ if needed
+Vyapari::Config.configure_dhan! if defined?(Vyapari::Config)
+
+# Parse command line arguments
+if ARGV.empty?
+  puts "Usage: #{File.basename(__FILE__)} <query>"
+  puts "Example: #{File.basename(__FILE__)} 'NIFTY options buying'"
+  exit 1
+end
+
+# Join all arguments as the query
+query = ARGV.join(" ")
+
+# Create and run the agent
+begin
+  agent = Vyapari::Agent.new
+  result = agent.run(query)
+  puts result
+rescue StandardError => e
+  warn "Error: #{e.message}"
+  warn e.backtrace if ENV["DEBUG"]
+  exit 1
+end
