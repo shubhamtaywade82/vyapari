@@ -10,7 +10,7 @@ class Vyapari::Client
   def chat(messages:, tools:)
     req = Net::HTTP::Post.new(@uri, "Content-Type" => "application/json")
     req.body = {
-      model: "llama3.2:3b",
+      model: ENV.fetch("OLLAMA_MODEL", "llama3.2:3b"),
       messages: messages,
       tools: tools,
       stream: false

@@ -66,8 +66,16 @@ module Vyapari
               # Fetch history
               history_result = history_tool.call({ "symbol" => symbol_str })
 
-              if history_result["error"] || history_result["1d"].nil? || history_result["1d"].empty?
-                errors << { "symbol" => symbol_str, "error" => "No daily data" }
+              if history_result["error"]
+                error_msg = history_result["error"] || "Unknown error"
+                errors << { "symbol" => symbol_str, "error" => "History fetch failed: #{error_msg}" }
+                warn "       ⚠️  #{symbol_str}: History fetch failed - #{error_msg}" if defined?(warn)
+                next
+              end
+
+              if history_result["1d"].nil? || history_result["1d"].empty?
+                errors << { "symbol" => symbol_str, "error" => "No daily data available" }
+                warn "       ⚠️  #{symbol_str}: No daily data (1d_count: #{history_result["1d_count"] || 0})" if defined?(warn)
                 next
               end
 
@@ -78,7 +86,17 @@ module Vyapari
                 "candles_1d" => history_result["1d"] || []
               })
 
-              next if analysis_result["error"] || analysis_result["trend"] == "unknown"
+              if analysis_result["error"]
+                errors << { "symbol" => symbol_str, "error" => "Analysis failed: #{analysis_result["error"]}" }
+                warn "       ⚠️  #{symbol_str}: Analysis failed - #{analysis_result["error"]}" if defined?(warn)
+                next
+              end
+
+              if analysis_result["trend"] == "unknown"
+                errors << { "symbol" => symbol_str, "error" => "Trend unknown (insufficient data)" }
+                warn "       ⚠️  #{symbol_str}: Trend unknown" if defined?(warn)
+                next
+              end
 
               # Score the stock
               score = calculate_score(analysis_result)
@@ -112,6 +130,21 @@ module Vyapari
           total_time = Time.now - start_time
           warn "📊 Completed: #{analyzed_stocks.size} analyzed, #{errors.size} errors in #{total_time.round(1)}s" if defined?(warn)
 
+          # If no stocks analyzed, create fallback candidates from symbols
+          if analyzed_stocks.empty?
+            warn "⚠️  No stocks successfully analyzed. Creating fallback candidates from symbols..." if defined?(warn)
+            # Create basic candidate entries from symbols (LLM can still provide recommendations)
+            analyzed_stocks = stocks_to_process.first(limit).map do |symbol|
+              {
+                "symbol" => symbol.to_s.upcase,
+                "score" => 0,
+                "max_score" => 10,
+                "trend" => "unknown",
+                "note" => "Analysis failed - basic candidate only"
+              }
+            end
+          end
+
           # Rank by score (highest first)
           ranked = analyzed_stocks.sort_by { |s| -s["score"] }
 
@@ -126,7 +159,8 @@ module Vyapari
             "top_candidates" => top_candidates,
             "all_analyzed" => analyzed_stocks, # Store all for reference
             "errors" => errors.first(10), # Limit error details
-            "processing_time_seconds" => total_time.round(2)
+            "processing_time_seconds" => total_time.round(1),
+            "fallback_used" => analyzed_stocks.any? { |s| s["note"] == "Analysis failed - basic candidate only" }
           }
         rescue StandardError => e
           {

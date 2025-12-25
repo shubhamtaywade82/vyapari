@@ -166,7 +166,7 @@ module Vyapari
           STEP 2: Call filter_universe tool with limit=50 and strategy="top_large_cap". The universe parameter is automatically injected.
           STEP 3: Call batch_analyze_universe tool with limit=20. This tool processes ALL stocks in Ruby (efficient), calculates technicals, scores each stock, and returns top candidates. The universe parameter is automatically injected.
           STEP 4: Call recommend_swing_trades tool. The candidates parameter is automatically injected from batch_analyze_universe result.
-          STEP 5: After recommend_swing_trades, return final JSON with swing trading recommendations (entry, SL, TP, holding period) for each top candidate.
+          STEP 5: After recommend_swing_trades, return final JSON with swing trading recommendations for ALL top candidates.
 
           CRITICAL RULES:
           - DO NOT call fetch_swing_history or analyze_swing_technicals individually - use batch_analyze_universe instead
@@ -174,16 +174,14 @@ module Vyapari
           - After batch_analyze_universe, you can either:
             a) Call recommend_swing_trades tool (candidates auto-injected), OR
             b) Return final JSON directly with recommendations
-          - Provide swing trading recommendations: entry price, stop loss, target prices, holding period (5-15 days), and action (BUY/HOLD/AVOID)
-          - You decide when workflow is complete - return final JSON when ready
+          - You MUST provide recommendations for ALL top candidates (not just one)
+          - Return an ARRAY format: [{"symbol": "RELIANCE", "entry": 2850, "stop_loss": 2760, "targets": [2920, 3000], "holding_period": "5-15 days", "action": "BUY"}, {"symbol": "HDFCBANK", ...}, ...]
+          - Each recommendation must include: symbol, entry price, stop_loss, targets (array of 2-3 price levels), holding_period (e.g., "5-15 days"), action (BUY/HOLD/AVOID)
+          - DO NOT recommend only one stock - recommend ALL candidates returned from batch_analyze_universe
+          - You decide when workflow is complete - return final JSON array when ready
           - DO NOT provide text explanations - only call tools until final response
-
-          CRITICAL RULES:
-          - You MUST call BOTH fetch_universe AND filter_universe before returning final response
-          - After filter_universe completes, return JSON immediately - do NOT call more tools
           - DO NOT return structures like {"name": "message", "parameters": {...}} - that's a tool call format, not JSON
-          - Return ONLY the JSON object directly, no wrapper, no tool call structure
-          - The universe data will be automatically included from context
+          - Return ONLY the JSON array directly: [{"symbol": "...", ...}, ...] - no wrapper, no tool call structure
 
           You MUST call tools ONE AT A TIME, sequentially.
         PROMPT
@@ -352,10 +350,18 @@ module Vyapari
 
           begin
             parsed = JSON.parse(json_content)
-            # Merge parsed content, but prioritize context data
-            response.merge!(parsed) do |_key, context_val, parsed_val|
-              # Prefer context data over parsed data for critical fields
-              context_val.is_a?(Array) && context_val.any? ? context_val : parsed_val
+
+            # Handle array responses (list of recommendations)
+            if parsed.is_a?(Array)
+              response["recommendations"] = parsed
+              response["recommendations_count"] = parsed.size
+            # Handle hash responses
+            elsif parsed.is_a?(Hash)
+              # Merge parsed content, but prioritize context data
+              response.merge!(parsed) do |_key, context_val, parsed_val|
+                # Prefer context data over parsed data for critical fields
+                context_val.is_a?(Array) && context_val.any? ? context_val : parsed_val
+              end
             end
           rescue JSON::ParserError
             # If JSON parsing fails, just use the message

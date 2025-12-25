@@ -14,7 +14,7 @@ module Vyapari
             type: "function",
             function: {
               name: name,
-              description: "Provides swing trading recommendations (entry price, stop loss, targets, holding period) for analyzed candidates. This is the final step - LLM synthesizes the technical analysis and provides actionable recommendations.",
+              description: "Provides swing trading recommendations (entry price, stop loss, targets, holding period) for ALL analyzed candidates. This is the final step - LLM synthesizes the technical analysis and provides actionable recommendations for EACH candidate. The candidates parameter is automatically injected from batch_analyze_universe result.",
               parameters: {
                 type: "object",
                 properties: {
@@ -36,11 +36,13 @@ module Vyapari
           raise "Candidates must be an array" unless candidates.is_a?(Array)
           raise "Candidates array is empty" if candidates.empty?
 
-          # This tool just validates and returns the candidates
-          # The LLM will provide recommendations in its response
+          # This tool validates candidates and returns them
+          # The LLM will provide recommendations in its response for ALL candidates
           {
             "candidates_received" => candidates.size,
-            "message" => "Candidates ready for LLM recommendation. LLM should provide entry, SL, TP, and holding period for each candidate."
+            "message" => "Candidates ready for LLM recommendation. LLM MUST provide entry, SL, TP, and holding period for ALL #{candidates.size} candidates, not just one.",
+            "candidates_count" => candidates.size,
+            "sample_candidate" => candidates.first # Show structure
           }
         rescue StandardError => e
           {
