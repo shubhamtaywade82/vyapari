@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
-require "json"
+# Backward compatibility: Vyapari::Agent is now Vyapari::Options::Agent
+# This file maintains the old interface for compatibility
+# New code should use Vyapari::Runner.run(query) or Vyapari::Options::Agent directly
 
 module Vyapari
+  # @deprecated Use Vyapari::Options::Agent or Vyapari::Runner instead
   # Agent class for managing tool interactions with Ollama
   class Agent
     MAX_STEPS = 8

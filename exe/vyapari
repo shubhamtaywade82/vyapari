@@ -27,10 +27,9 @@ end
 # Join all arguments as the query
 query = ARGV.join(" ")
 
-# Create and run the agent
+# Use Runner to route to appropriate mode
 begin
-  agent = Vyapari::Agent.new
-  result = agent.run(query)
+  result = Vyapari::Runner.run(query)
   puts result
 rescue StandardError => e
   warn "Error: #{e.message}"

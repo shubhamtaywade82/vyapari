@@ -6,6 +6,14 @@ require "dhan_hq"
 # Ensure modules exist before loading files
 module Vyapari
   module Tools
+    module Swing
+    end
+  end
+
+  module Options
+  end
+
+  module Swing
   end
 
   module Indicators
