@@ -14,18 +14,11 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 4: Fetches option chain data for index options. MUST be called after analyze_trend returns 'bullish' or 'bearish'. DO NOT call if trend is 'avoid'. Requires: symbol (from find_instrument), trend (from analyze_trend - must be 'bullish' or 'bearish'), and expiry (leave empty for auto-selection). DO NOT pass candles, exchange_segment, instrument, interval, or strike_price.",
+            description: "STEP 5: Fetches option chain data for index options. MUST be called after analyze_trend returns 'bullish' or 'bearish'. DO NOT call if trend is 'avoid'. ALL parameters (symbol, expiry, trend) are automatically injected from context - call with empty parameters: {}.",
             parameters: {
               type: "object",
-              properties: {
-                symbol: { type: "string" },
-                expiry: { type: "string" },
-                trend: {
-                  type: "string",
-                  description: "Market trend from analyze_trend tool: 'bullish' or 'bearish'. Do not use 'avoid' - if trend is 'avoid', recommend NO_TRADE instead"
-                }
-              },
-              required: %w[symbol expiry trend]
+              properties: {},
+              required: []
             }
           }
         }
@@ -85,14 +78,29 @@ module Vyapari
         end
 
         # Use OptionChain.fetch API (as shown in user's example)
-        chain = DhanHQ::Models::OptionChain.fetch(
-          underlying_seg: underlying_seg,
-          underlying_scrip: underlying_scrip,
-          expiry: expiry
-        )
+        begin
+          chain = DhanHQ::Models::OptionChain.fetch(
+            underlying_seg: underlying_seg,
+            underlying_scrip: underlying_scrip,
+            expiry: expiry
+          )
 
-        spot   = chain["last_price"].to_f
-        oc     = chain["oc"]
+          # Validate response is a Hash (handles holidays/errors where API returns HTML)
+          unless chain.is_a?(Hash)
+            raise "Invalid response format: expected Hash, got #{chain.class}. API may have returned HTML/error page (e.g., 502 Bad Gateway on holidays)."
+          end
+        rescue StandardError => e
+          # If OptionChain.fetch fails (e.g., holiday returns HTML, 502 Bad Gateway, etc.)
+          error_msg = "Failed to fetch option chain for expiry #{expiry}: #{e.message}"
+          error_msg += " This may be due to market holidays or API issues. Try a different expiry date."
+          raise error_msg
+        end
+
+        spot   = chain["last_price"]&.to_f || chain[:last_price]&.to_f
+        oc     = chain["oc"] || chain[:oc]
+
+        raise "Invalid option chain response: missing 'last_price' or 'oc' fields" if spot.nil? || oc.nil?
+
         strikes = oc.keys.map(&:to_f).sort
 
         raise "Empty option chain" if strikes.empty?

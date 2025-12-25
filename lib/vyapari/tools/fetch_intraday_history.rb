@@ -13,28 +13,11 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 2: Fetches intraday price history (candles) for a symbol. MUST be called after find_instrument. Use security_id, exchange_segment, and instrument (NOT instrument_type) from find_instrument result. Use interval='5' (as a string) for 5-minute candles (valid values: '1', '5', '15', '25', '60'). Returns candle data needed for analyze_trend.",
+            description: "STEP 2: Fetches intraday price history (candles) for a symbol. MUST be called after find_instrument. ALL parameters (security_id, exchange_segment, instrument, interval) are automatically injected from context - call with empty parameters: {}.",
             parameters: {
               type: "object",
-              properties: {
-                security_id: {
-                  type: "string",
-                  description: "Security ID from find_instrument result"
-                },
-                exchange_segment: {
-                  type: "string",
-                  description: "Exchange segment from find_instrument result"
-                },
-                instrument: {
-                  type: "string",
-                  description: "Instrument field from find_instrument result (NOT instrument_type)"
-                },
-                interval: {
-                  type: "string",
-                  description: "Time interval in minutes as a string. Must be one of: '1', '5', '15', '25', '60'. Use '5' for 5-minute candles."
-                }
-              },
-              required: %w[security_id exchange_segment instrument interval]
+              properties: {},
+              required: []
             }
           }
         }

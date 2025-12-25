@@ -11,7 +11,7 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 4: Fetches available expiry dates for the instrument. MUST be called after find_instrument. Returns list of expiry dates. Used by fetch_option_chain to select the nearest valid expiry.",
+            description: "STEP 4: Fetches available expiry dates for the instrument. MUST be called after find_instrument. Parameters (symbol, security_id, exchange_segment) are automatically injected from context - call with empty parameters: {}. Returns list of expiry dates. Used by fetch_option_chain to select the nearest valid expiry.",
             parameters: {
               type: "object",
               properties: {},
@@ -37,11 +37,18 @@ module Vyapari
               underlying_seg: underlying_seg,
               underlying_scrip: underlying_scrip
             )
+
+            # Validate response is an Array (handles holidays/errors where API returns HTML)
+            unless expiries.is_a?(Array)
+              raise "Invalid response format: expected Array, got #{expiries.class}. API may have returned HTML/error page."
+            end
+
             raise "No expiries available" if expiries.nil? || expiries.empty?
             return expiries
           rescue StandardError => e
-            # If OptionChain.fetch_expiry_list fails, fall back to instrument.expiry_list
-            # This happens if API endpoint has issues or authentication problems
+            # If OptionChain.fetch_expiry_list fails (e.g., holiday returns HTML, API error, JSON parse error, etc.)
+            # Fall back to instrument.expiry_list
+            # This handles cases where the API returns HTML error pages on holidays
           end
         end
 
@@ -51,7 +58,13 @@ module Vyapari
           symbol = symbol.to_s.upcase
           underlying = DhanHQ::Models::Instrument.find(underlying_seg, symbol)
           raise "Underlying not found for symbol: #{symbol}" unless underlying
+
           expiries = underlying.expiry_list || []
+
+          # Validate response is an Array (handles holidays/errors)
+          unless expiries.is_a?(Array)
+            raise "Invalid response format from instrument.expiry_list: expected Array, got #{expiries.class}. API may have returned HTML/error page."
+          end
         else
           raise "Missing required parameters: need either underlying_scrip (for OptionChain.fetch_expiry_list) or symbol (for instrument.expiry_list fallback)"
         end

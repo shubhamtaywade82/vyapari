@@ -36,7 +36,14 @@ module Vyapari
       system_message = {
         role: "system",
         content: <<~PROMPT
-          You are a trading agent that helps users with option trading decisions.
+          You are an autonomous trading planner.
+
+          RULES:
+          - You MUST NOT write Ruby code.
+          - You MUST NOT explain in text.
+          - You MUST ONLY respond with tool calls until the task is complete.
+          - If a required value is missing, request the correct tool.
+          - You are NOT allowed to guess.
 
           CRITICAL: You MUST ONLY use the provided tools. DO NOT write code, DO NOT generate Python scripts, DO NOT hallucinate functions. ONLY call the available tools.
 
@@ -45,29 +52,31 @@ module Vyapari
           You MUST follow this exact stepwise workflow. Call tools ONE AT A TIME, waiting for results before proceeding:
 
           STEP 1: Call find_instrument tool - For indices (NIFTY, BANKNIFTY), use exchange_segment="IDX_I". For stocks, use NSE_EQ or BSE_EQ.
-          STEP 2: Call fetch_intraday_history tool - Parameters will be auto-filled from context
-          STEP 3: Call analyze_trend tool - Parameters will be auto-filled from context
-          STEP 4: Call fetch_expiry_list tool - NO parameters needed, uses context
-          STEP 5: Call fetch_option_chain tool - ONLY if step 3 returns trend="bullish" or "bearish" (NOT "avoid"). Parameters will be auto-filled from context.
-          STEP 6: Call recommend_trade tool - Use options from step 5 and trend from step 3
+          STEP 2: Call fetch_intraday_history tool - Parameters are auto-filled from context, call with empty parameters: {}
+          STEP 3: Call analyze_trend tool - Parameters are auto-filled from context, call with empty parameters: {}
+          STEP 4: Call fetch_expiry_list tool - Parameters are auto-injected from context, call with empty parameters: {}
+          STEP 5: Call fetch_option_chain tool - ONLY if step 3 returns trend="bullish" or "bearish" (NOT "avoid"). Parameters are auto-filled from context, call with empty parameters: {}
+          STEP 6: Call recommend_trade tool - Parameters are auto-filled from context, call with empty parameters: {}
 
-          CRITICAL: You are NOT allowed to write Ruby code. You are NOT allowed to explain. You MUST ONLY respond with tool calls until the task is complete. Parameters are automatically resolved from context - you only need to specify the tool name.
-
-          ABSOLUTE RULES:
-          - NEVER write code or generate scripts
+          ABSOLUTE RULES (NO EXCEPTIONS):
+          - NEVER write code or generate scripts (Ruby, Python, or any language)
           - NEVER provide explanations or text responses
+          - NEVER say "I'll call X tool" or "Now I will" - just call the tool immediately
+          - NEVER guess values - if something is missing, call the prerequisite tool
           - ONLY call the provided tools
           - Call tools ONE AT A TIME, sequentially
           - Wait for each tool's result before calling the next
           - DO NOT provide text responses between tool calls - just call the next tool directly
-          - DO NOT say "I'll call X tool" - just call it immediately
-          - For NIFTY/BANKNIFTY, use exchange_segment="IDX_I"
-          - If analyze_trend returns "avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade with trend="avoid"
+          - Parameters are automatically resolved from context - you only need to call tools with empty parameters: {}
+          - For NIFTY/BANKNIFTY, use exchange_segment="IDX_I" in find_instrument
+          - If analyze_trend returns "avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade
           - Continue until recommend_trade is called - that's the final step
 
           Sequence: find_instrument → fetch_intraday_history → analyze_trend → fetch_expiry_list → fetch_option_chain → recommend_trade
 
-          NOTE: If analyze_trend returns trend="avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade with trend="avoid".
+          NOTE: If analyze_trend returns trend="avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade.
+
+          REMEMBER: You are an autonomous trading planner. Your ONLY job is to call tools. No code. No explanations. No guessing.
         PROMPT
       }
 
@@ -469,7 +478,7 @@ module Vyapari
           end
         end
       when "fetch_expiry_list"
-        base = "You MUST call the fetch_expiry_list tool NOW. This tool requires NO parameters - call it with empty parameters: {}. Do not provide any text response, just call the tool."
+        base = "You MUST call the fetch_expiry_list tool NOW. Parameters (symbol, security_id, exchange_segment) are automatically injected from context - just call the tool with empty parameters: {}. Do not provide any text response, just call the tool."
       when "recommend_trade"
         base += " Use options from fetch_option_chain and trend from analyze_trend."
       end
@@ -484,13 +493,13 @@ module Vyapari
         args
 
       when "fetch_intraday_history"
-        # Inject from context - LLM params are ignored
+        # Inject from context - LLM params are completely ignored
         raise "Missing instrument context" unless @context[:instrument]
         {
           "security_id" => @context[:instrument]["security_id"] || @context[:instrument][:security_id],
           "exchange_segment" => @context[:instrument]["exchange_segment"] || @context[:instrument][:exchange_segment],
           "instrument" => @context[:instrument]["instrument"] || @context[:instrument][:instrument],
-          "interval" => args["interval"] || "5" # Allow LLM to specify interval, default to 5
+          "interval" => "5" # Fixed value, LLM args ignored
         }
 
       when "analyze_trend"
@@ -504,7 +513,8 @@ module Vyapari
         inst = @context[:instrument]
         underlying_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
         underlying_scrip = inst["security_id"] || inst[:security_id]
-        symbol = inst["instrument"] || inst[:instrument] || inst["symbol"] || inst[:symbol]
+        # Use stored symbol (original user input like "NIFTY"), not instrument type ("INDEX")
+        symbol = inst["symbol"] || inst[:symbol] || inst["instrument"] || inst[:instrument]
 
         # Provide both underlying_scrip (for OptionChain.fetch_expiry_list) and symbol (for fallback)
         args = {
@@ -526,7 +536,8 @@ module Vyapari
         inst = @context[:instrument]
         underlying_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
         underlying_scrip = inst["security_id"] || inst[:security_id]
-        symbol = inst["instrument"] || inst[:instrument] || inst["symbol"] || inst[:symbol]
+        # Use stored symbol (original user input like "NIFTY"), not instrument type ("INDEX")
+        symbol = inst["symbol"] || inst[:symbol] || inst["instrument"] || inst[:instrument]
 
         raise "Missing security_id in instrument context" unless underlying_scrip
 
@@ -539,10 +550,10 @@ module Vyapari
         }
 
       when "recommend_trade"
-        # Use LLM args but validate against context
-        trend = args["trend"] || @context[:trend]
-        options = args["options"] || @context[:option_chain]
-        { "trend" => trend, "options" => options }
+        # Inject all from context - LLM params are ignored
+        raise "Missing trend context" unless @context[:trend]
+        raise "Missing option_chain context" unless @context[:option_chain]
+        { "trend" => @context[:trend], "options" => @context[:option_chain] }
 
       else
         args
@@ -553,6 +564,8 @@ module Vyapari
       required = TOOL_PREREQUISITES[tool_name] || []
       return if required.empty?
 
+      # Check if context keys are present (not nil)
+      # In plain Ruby, we check for truthiness (nil and false are falsy)
       missing = required.reject { |k| @context[k] }
       return if missing.empty?
 

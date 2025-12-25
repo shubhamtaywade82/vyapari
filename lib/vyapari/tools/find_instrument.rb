@@ -48,7 +48,8 @@ module Vyapari
           security_id: inst.security_id.to_s,
           exchange_segment: inst.exchange_segment,
           instrument: inst.instrument || inst.instrument_type,
-          instrument_type: inst.instrument_type
+          instrument_type: inst.instrument_type,
+          symbol: symbol # Store original symbol for use in fetch_expiry_list and fetch_option_chain
         }
       end
     end

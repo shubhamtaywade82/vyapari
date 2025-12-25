@@ -11,17 +11,11 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 5: Final step - Recommends a trade based on market analysis. MUST be called last. Use options from fetch_option_chain and trend from analyze_trend. Returns NO_TRADE if trend is 'avoid' or 'choppy'.",
+            description: "STEP 6: Final step - Recommends a trade based on market analysis. MUST be called last. ALL parameters (options, trend) are automatically injected from context - call with empty parameters: {}. Returns NO_TRADE if trend is 'avoid' or 'choppy'.",
             parameters: {
               type: "object",
-              properties: {
-                options: { type: "array" },
-                trend: {
-                  type: "string",
-                  description: "Market trend from analyze_trend: 'bullish', 'bearish', or 'avoid'"
-                }
-              },
-              required: %w[options trend]
+              properties: {},
+              required: []
             }
           }
         }

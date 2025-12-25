@@ -13,13 +13,11 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 3: Analyzes market trends based on candle data from fetch_intraday_history. MUST be called after fetch_intraday_history. Uses RSI, ADX, and EMA indicators. Returns trend: 'bullish', 'bearish', or 'avoid'. If 'avoid', do NOT call fetch_option_chain.",
+            description: "STEP 3: Analyzes market trends based on candle data from fetch_intraday_history. MUST be called after fetch_intraday_history. Uses RSI, ADX, and EMA indicators. Returns trend: 'bullish', 'bearish', or 'avoid'. If 'avoid', do NOT call fetch_option_chain. ALL parameters (candles) are automatically injected from context - call with empty parameters: {}.",
             parameters: {
               type: "object",
-              properties: {
-                candles: { type: "array" }
-              },
-              required: ["candles"]
+              properties: {},
+              required: []
             }
           }
         }
