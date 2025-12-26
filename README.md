@@ -1,41 +1,31 @@
 # Vyapari
 
-**Vyapari** is an AI-powered options trading agent built in Ruby that uses Large Language Models (LLMs) via Ollama to analyze market trends and recommend option trading strategies. It integrates with the DhanHQ API to fetch real-time market data, calculate technical indicators, and generate trade recommendations.
+**Vyapari** is an AI-powered options trading agent built in Ruby that uses Large Language Models (LLMs) via Ollama to analyze market trends and recommend option trading strategies. It integrates with the DhanHQ API to fetch real-time market data, calculate technical indicators (including volume-based indicators), and generate trade recommendations.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+- [Architecture](#architecture)
+- [Technical Indicators](#technical-indicators)
+- [Development Guide](#development-guide)
+- [Contributing](#contributing)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Features
 
 - 🤖 **AI-Powered Agent**: Uses Ollama LLM to orchestrate trading analysis workflow
-- 📊 **Technical Analysis**: Calculates RSI, ADX, and EMA indicators for trend analysis
+- 📊 **Technical Analysis**: Calculates RSI, ADX, EMA, and volume indicators (MFI, CMF, OBV) for trend analysis
 - 📈 **Options Trading**: Fetches option chains and recommends trades based on market trends
 - 🔄 **Context-Aware**: Maintains persistent context across tool calls to prevent state loss
 - 🛡️ **Robust Error Handling**: Validates prerequisites, injects arguments from context, and prevents invalid tool calls
 - 📝 **Comprehensive Logging**: Detailed logs for debugging and monitoring agent execution
-
-## Architecture
-
-Vyapari follows a multi-layered architecture:
-
-1. **Agent Layer** (`Vyapari::Agent`): Orchestrates the LLM interaction and tool execution
-   - Manages message history and context
-   - Enforces tool prerequisites
-   - Injects arguments from context
-   - Prevents LLM hallucination and code generation
-
-2. **Tool Layer** (`Vyapari::Tools`): Modular tools for trading operations
-   - `FindInstrument`: Locates trading instruments
-   - `FetchIntradayHistory`: Retrieves historical price data
-   - `AnalyzeTrend`: Calculates technical indicators and determines market trend
-   - `FetchExpiryList`: Gets available option expiry dates
-   - `FetchOptionChain`: Retrieves option chain data
-   - `RecommendTrade`: Generates trade recommendations
-
-3. **Indicator Layer** (`Vyapari::Indicators`): Technical analysis calculations
-   - RSI (Relative Strength Index)
-   - ADX (Average Directional Index)
-   - EMA (Exponential Moving Average)
-
-4. **Trading Layer** (`Vyapari::Trading`): Risk management utilities
-   - Position sizing calculations
+- 📦 **Volume Indicators**: Uses `technical-analysis` and `ruby-technical-analysis` libraries for comprehensive indicator support
+- 🎯 **Multi-Timeframe Analysis**: Analyzes 15-minute structure and 5-minute trends for better accuracy
 
 ## Installation
 
@@ -47,18 +37,18 @@ Vyapari follows a multi-layered architecture:
 
 ### Setup
 
-1. Clone the repository:
+1. **Clone the repository:**
 ```bash
 git clone https://github.com/shubhamtaywade/vyapari.git
 cd vyapari
 ```
 
-2. Install dependencies:
+2. **Install dependencies:**
 ```bash
 bundle install
 ```
 
-3. Set up environment variables (create `.env` file):
+3. **Set up environment variables** (create `.env` file):
 ```bash
 # Ollama Configuration
 OLLAMA_URL=http://localhost:11434  # Optional, defaults to localhost:11434
@@ -69,19 +59,19 @@ DHAN_ACCESS_TOKEN=your_access_token
 DHAN_LOG_LEVEL=INFO  # Optional, defaults to INFO
 ```
 
-4. Run the setup script:
+4. **Run the setup script:**
 ```bash
 bin/setup
 ```
 
-## Usage
+## Quick Start
 
 ### Command Line
 
 The simplest way to use Vyapari is via the command-line executable:
 
 ```bash
-exe/vyapari "Analyze NIFTY index and recommend options trading strategy"
+exe/vyapari "Analyze NIFTY index on multi timeframe options buying"
 ```
 
 ### Programmatic Usage
@@ -93,228 +83,271 @@ require "vyapari"
 Vyapari::Config.configure_dhan!
 
 # Create and run the agent
-agent = Vyapari::Agent.new
+agent = Vyapari::Options::Agent.new
 result = agent.run("NIFTY options buying")
 
 puts result
 ```
 
-## Workflow
+## Usage
 
-The agent follows a strict sequential workflow with guaranteed state persistence:
+### Options Trading Mode (Default)
+
+The agent follows a strict sequential workflow:
 
 1. **Find Instrument** → Locates the trading instrument (NIFTY, BANKNIFTY, stocks, etc.)
-   - Stores: `instrument` in context
-   - LLM provides: `exchange_segment`, `symbol`
-   - Ruby uses: LLM arguments (first tool, no context yet)
+2. **Fetch 15m History** → Retrieves 15-minute candles for structure analysis
+3. **Analyze Structure** → Detects HH/HL (bullish) or LL/LH (bearish) patterns
+4. **Fetch 5m History** → Retrieves 5-minute candles for trend analysis
+5. **Analyze Trend** → Calculates indicators and determines trend (bullish/bearish/avoid)
+6. **Fetch Expiry List** → Gets available option expiry dates
+7. **Fetch Option Chain** → Retrieves option chain data (only if trend is bullish/bearish)
+8. **Recommend Trade** → Generates trade recommendation
 
-2. **Fetch Intraday History** → Retrieves 7 days of 5-minute candle data
-   - Stores: `candles` in context
-   - LLM provides: `{}` (empty - parameters auto-injected)
-   - Ruby injects: `security_id`, `exchange_segment`, `instrument`, `interval` from context
+### Swing Trading Mode
 
-3. **Analyze Trend** → Calculates RSI, ADX, EMA and determines trend (bullish/bearish/avoid)
-   - Stores: `trend` in context
-   - LLM provides: `{}` (empty - parameters auto-injected)
-   - Ruby injects: `candles` from context
-
-4. **Fetch Expiry List** → Gets available option expiry dates
-   - Stores: `expiry` in context (first valid expiry, handles expiry_passed logic)
-   - LLM provides: `{}` (empty - parameters auto-injected)
-   - Ruby injects: `underlying_seg`, `underlying_scrip`, `symbol` from context
-
-5. **Fetch Option Chain** → Retrieves option chain data (only if trend is bullish/bearish)
-   - Stores: `option_chain` in context
-   - LLM provides: `{}` (empty - parameters auto-injected)
-   - Ruby injects: `underlying_seg`, `underlying_scrip`, `symbol`, `expiry`, `trend` from context
-   - Validates: Rejects if `trend` is "avoid"
-
-6. **Recommend Trade** → Generates trade recommendation with entry, stop-loss, target, and quantity
-   - LLM provides: `{}` (empty - parameters auto-injected)
-   - Ruby injects: `trend`, `options` from context
-
-### Context Management
-
-The agent maintains persistent `@context` hash that stores results after each tool call:
-
-```ruby
-@context = {
-  instrument: nil,    # From find_instrument
-  candles: nil,        # From fetch_intraday_history
-  trend: nil,          # From analyze_trend
-  expiry: nil,         # From fetch_expiry_list
-  option_chain: nil    # From fetch_option_chain
-}
+```bash
+exe/vyapari "swing trading ideas"
 ```
 
-**Key Guarantees:**
-- ✅ No empty parameters - all arguments auto-injected from context
-- ✅ No invented values - Ruby controls all parameters
-- ✅ No "avoid" trends passed to fetch_option_chain - validated and rejected
-- ✅ No crashes - prerequisite guards prevent invalid calls
-- ✅ State persistence - context updated after every tool call
+The swing agent:
+- Fetches universe from NSE indices
+- Analyzes technical indicators
+- Filters and ranks candidates
+- Provides swing trading recommendations
 
-## Tools
+## Architecture
 
-### FindInstrument
+Vyapari follows a multi-layered architecture:
 
-Finds trading instruments by symbol and exchange segment.
+### 1. Agent Layer (`Vyapari::Options::Agent` / `Vyapari::Swing::Agent`)
 
-**Parameters** (LLM provides - first tool, no context yet):
-- `exchange_segment`: Exchange segment (IDX_I for indices, NSE_EQ/BSE_EQ for stocks)
-- `symbol`: Instrument symbol (e.g., "NIFTY", "BANKNIFTY")
+Orchestrates the LLM interaction and tool execution:
+- Manages message history and context
+- Enforces tool prerequisites
+- Injects arguments from context
+- Prevents LLM hallucination and code generation
+- Auto-injects critical tools after multiple failures
 
-**Returns**: `security_id`, `exchange_segment`, `instrument`, `instrument_type`, `symbol` (original symbol stored for later use)
+### 2. Tool Layer (`Vyapari::Tools`)
 
-**Stored in context**: `@context[:instrument]`
+Modular tools for trading operations:
 
-### FetchIntradayHistory
+**Options Trading Tools:**
+- `FindInstrument`: Locates trading instruments
+- `FetchIntradayHistory`: Retrieves historical price data (5m, 15m intervals)
+- `AnalyzeStructure15m`: Analyzes 15-minute market structure (HH/HL, LL/LH)
+- `AnalyzeTrend`: Calculates technical indicators and determines market trend
+- `FetchExpiryList`: Gets available option expiry dates
+- `FetchOptionChain`: Retrieves option chain data
+- `RecommendTrade`: Generates trade recommendations
 
-Fetches 7 days of intraday historical data.
+**Swing Trading Tools:**
+- `FetchUniverse`: Downloads NSE index constituents
+- `AnalyzeSwingTechnicals`: Analyzes stocks for swing trading
+- `BatchAnalyzeUniverse`: Batch processes multiple stocks
 
-**Parameters** (auto-injected from context - LLM calls with `{}`):
-- `security_id`: Security ID from `@context[:instrument]`
-- `exchange_segment`: Exchange segment from `@context[:instrument]`
-- `instrument`: Instrument field from `@context[:instrument]`
-- `interval`: Fixed to "5" (5-minute candles)
+### 3. Indicator Layer (`Vyapari::Indicators`)
 
-**Returns**: Hash with `candles` array containing candle objects with `open`, `high`, `low`, `close`, `volume`, `timestamp`
+Technical analysis calculations:
 
-**Stored in context**: `@context[:candles]` (extracted from result)
+**Custom Implementations:**
+- `RSI`: Relative Strength Index
+- `ADX`: Average Directional Index
+- `EMA`: Exponential Moving Average
+- `Supertrend`: Supertrend indicator
 
-### AnalyzeTrend
+**Library-Based (via `TechnicalAnalysisAdapter`):**
+- Volume indicators: OBV, CMF, MFI, VROC, A/D, VPT, VWAP
+- Price indicators: RSI, MACD, Bollinger Bands, Stochastic, ATR, CCI, Williams %R
+- Unique indicators: IMI, Chande Momentum Oscillator, Volume Oscillator, Pivot Points
 
-Analyzes market trend using technical indicators.
+### 4. Trading Layer (`Vyapari::Trading`)
 
-**Parameters** (auto-injected from context - LLM calls with `{}`):
-- `candles`: Array of candle data from `@context[:candles]`
-
-**Returns**:
-- `trend`: "bullish", "bearish", or "avoid"
-- `rsi`: Relative Strength Index value
-- `adx`: Average Directional Index value
-- `ema_fast`: Fast EMA (9 period)
-- `ema_slow`: Slow EMA (21 period)
-- `recommendation`: Human-readable recommendation
-
-**Trend Logic**:
-- **Bullish**: ADX > 25 AND EMA(9) > EMA(21)
-- **Bearish**: ADX > 25 AND EMA(9) < EMA(21)
-- **Avoid**: ADX ≤ 25 (choppy market, no clear trend)
-
-**Stored in context**: `@context[:trend]` (extracted from result)
-
-### FetchExpiryList
-
-Fetches available option expiry dates.
-
-**Parameters** (auto-injected from context - LLM calls with `{}`):
-- `underlying_seg`: Exchange segment from `@context[:instrument]` (default: "IDX_I")
-- `underlying_scrip`: Security ID as integer from `@context[:instrument]`
-- `symbol`: Original symbol from `@context[:instrument]` (for fallback)
-
-**Returns**: Array of expiry date strings (e.g., ["2025-12-30", "2026-01-06", ...])
-
-**Stored in context**: `@context[:expiry]` (first valid expiry, handles expiry_passed logic - uses second expiry if first has passed after 4 PM)
-
-### FetchOptionChain
-
-Fetches option chain data for a specific expiry.
-
-**Parameters** (auto-injected from context - LLM calls with `{}`):
-- `underlying_seg`: Exchange segment from `@context[:instrument]`
-- `underlying_scrip`: Security ID from `@context[:instrument]`
-- `symbol`: Original symbol from `@context[:instrument]` (for fallback)
-- `expiry`: Expiry date from `@context[:expiry]`
-- `trend`: Market trend from `@context[:trend]` (must be "bullish" or "bearish")
-
-**Validation**: Rejects if `trend` is "avoid" - raises `ArgumentError` directing to `recommend_trade` instead
-
-**Returns**:
-- `spot_price`: Current spot price
-- `atm_strike`: At-the-money strike price
-- `otm_strike`: Out-of-the-money strike price
-- `side`: "CE" (Call) for bullish, "PE" (Put) for bearish
-- `contracts`: Array of selected option contracts
-
-**Stored in context**: `@context[:option_chain]`
-
-### RecommendTrade
-
-Generates trade recommendation based on analysis.
-
-**Parameters** (auto-injected from context - LLM calls with `{}`):
-- `options`: Option chain data from `@context[:option_chain]`
-- `trend`: Market trend from `@context[:trend]`
-
-**Returns**:
-- `action`: "BUY" or "NO_TRADE" (if trend is "avoid" or "choppy")
-- `side`: "CE" or "PE"
-- `security_id`: Contract security ID
-- `entry_price`: Recommended entry price
-- `stop_loss_price`: Stop loss price (65% of entry)
-- `target_price`: Target price (140% of entry)
-- `quantity`: Position size (calculated based on premium, capped at 50 lots)
+Risk management utilities:
+- Position sizing calculations
+- Risk management rules
 
 ## Technical Indicators
 
-Vyapari uses three key technical indicators for trend analysis:
+### Price-Based Indicators
 
-### RSI (Relative Strength Index)
+#### RSI (Relative Strength Index)
 - **Range**: 0-100
 - **Purpose**: Measures momentum
-- **Interpretation**: >70 overbought, <30 oversold
+- **Interpretation**:
+  - >70: Overbought (potential sell signal)
+  - <30: Oversold (potential buy signal)
+  - 30-70: Neutral zone
+- **Default Period**: 14
 
-### ADX (Average Directional Index)
+#### ADX (Average Directional Index)
 - **Range**: 0-100
-- **Purpose**: Measures trend strength
-- **Interpretation**: >25 strong trend, ≤25 choppy market
+- **Purpose**: Measures trend strength (not direction)
+- **Interpretation**:
+  - <20: Weak/no trend (choppy market)
+  - 20-25: Developing trend
+  - >25: Strong trend
+  - >50: Very strong trend (rare)
+- **Default Period**: 14
+- **Usage**: Primary filter - ADX > 25 required for bullish/bearish signals
 
-### EMA (Exponential Moving Average)
+#### EMA (Exponential Moving Average)
 - **Periods**: 9 (fast) and 21 (slow)
 - **Purpose**: Identifies trend direction
-- **Interpretation**: Fast > Slow = bullish, Fast < Slow = bearish
+- **Interpretation**:
+  - Fast > Slow: Uptrend (bullish)
+  - Fast < Slow: Downtrend (bearish)
+  - Fast ≈ Slow: Sideways/choppy market
 
-See [INDICATORS.md](INDICATORS.md) for detailed documentation.
+### Volume-Based Indicators
 
-## Configuration
+#### MFI (Money Flow Index)
+- **Range**: 0-100
+- **Purpose**: Volume-weighted RSI
+- **Interpretation**:
+  - >80: Overbought
+  - <20: Oversold
+  - >50: Buying pressure
+  - <50: Selling pressure
 
-### Ollama Configuration
+#### CMF (Chaikin Money Flow)
+- **Range**: -1 to +1
+- **Purpose**: Volume-weighted accumulation/distribution
+- **Interpretation**:
+  - >0: Buying pressure (bullish)
+  - <0: Selling pressure (bearish)
+  - >0.25: Strong buying pressure
+  - <-0.25: Strong selling pressure
 
-Set the Ollama URL via environment variable:
-```bash
-export OLLAMA_URL=http://localhost:11434
-```
+#### OBV (On-Balance Volume)
+- **Purpose**: Cumulative volume indicator
+- **Interpretation**:
+  - Rising OBV: Buying pressure (bullish)
+  - Falling OBV: Selling pressure (bearish)
+  - OBV divergence: Potential reversal signal
 
-Or pass a custom client to the agent:
+### Trend Determination Logic
+
 ```ruby
-client = Vyapari::Client.new(url: "http://custom-ollama:11434")
-agent = Vyapari::Agent.new(client: client)
+# Price-based trend
+price_trend = if ADX > 25 && EMA_Fast > EMA_Slow
+  "bullish"
+elsif ADX > 25 && EMA_Fast < EMA_Slow
+  "bearish"
+else
+  "avoid"  # ADX ≤ 25 = choppy market
+end
+
+# Volume confirmation
+final_trend = if price_trend == "bullish" && volume_trend == "bullish"
+  "bullish"  # Strong confirmation
+elsif price_trend == "bearish" && volume_trend == "bearish"
+  "bearish"  # Strong confirmation
+elsif price_trend == "bullish" && volume_trend == "bearish"
+  "avoid"  # Volume divergence - weak signal
+else
+  price_trend  # Use price trend if volume is neutral
+end
 ```
 
-### DhanHQ Configuration
+### Indicator Libraries
 
-DhanHQ is configured via environment variables:
-- `DHAN_CLIENT_ID`: Your DhanHQ client ID
-- `DHAN_ACCESS_TOKEN`: Your DhanHQ access token
-- `DHAN_LOG_LEVEL`: Logging level (default: INFO)
+Vyapari uses two technical analysis libraries:
 
-Configure programmatically:
-```ruby
-Vyapari::Config.configure_dhan!
+1. **intrinio/technical-analysis** (Primary)
+   - 40+ indicators
+   - Comprehensive coverage
+   - Used for 95% of indicators
+
+2. **ruby-technical-analysis** (Unique Indicators)
+   - IMI, Chande Momentum Oscillator, Volume Oscillator, Pivot Points
+   - Used only when indicator is not available in intrinio
+
+See [INDICATORS_COMPARISON.md](INDICATORS_COMPARISON.md) for complete indicator mapping.
+
+## Development Guide
+
+### Project Structure
+
+```
+vyapari/
+├── lib/
+│   ├── vyapari/
+│   │   ├── agent.rb                    # Base agent class
+│   │   ├── client.rb                   # Ollama API client
+│   │   ├── config.rb                   # Configuration utilities
+│   │   ├── runner.rb                   # Mode router (options/swing)
+│   │   ├── options/
+│   │   │   └── agent.rb               # Options trading agent
+│   │   ├── swing/
+│   │   │   └── agent.rb               # Swing trading agent
+│   │   ├── tools/                     # Trading tools
+│   │   │   ├── base.rb
+│   │   │   ├── find_instrument.rb
+│   │   │   ├── fetch_intraday_history.rb
+│   │   │   ├── analyze_structure_15m.rb
+│   │   │   ├── analyze_trend.rb
+│   │   │   ├── fetch_expiry_list.rb
+│   │   │   ├── fetch_option_chain.rb
+│   │   │   ├── recommend_trade.rb
+│   │   │   ├── registry.rb
+│   │   │   └── swing/                 # Swing trading tools
+│   │   └── indicators/                # Technical indicators
+│   │       ├── rsi.rb                 # Custom RSI
+│   │       ├── adx.rb                 # Custom ADX
+│   │       ├── ema.rb                 # Custom EMA
+│   │       ├── technical_analysis_adapter.rb  # Library adapter
+│   │       └── volume_indicators.rb   # Volume helper module
+│   └── trading/
+│       └── risk.rb                    # Risk management
+├── exe/
+│   └── vyapari                        # CLI executable
+├── spec/                              # RSpec tests
+├── INDICATORS.md                      # Indicator documentation
+├── INDICATORS_COMPARISON.md           # Library comparison
+├── VOLUME_INDICATORS.md               # Volume indicators guide
+├── SWING_UNIVERSE.md                  # Swing trading docs
+└── README.md                          # This file
 ```
 
-## Development
+### Key Design Principles
 
-### Setup
+#### Core Architecture Rule
 
-```bash
-# Install dependencies
-bundle install
+**"LLM chooses the tool. Ruby supplies the arguments."**
 
-# Run setup script
-bin/setup
-```
+This fundamental principle ensures reliability:
+- The LLM decides **WHICH** tool to call
+- Ruby decides **WHAT** arguments the tool gets
+- LLM-provided arguments are **completely ignored** once Ruby has context
+- All parameters are auto-injected from persistent context
+
+#### Implementation Details
+
+1. **Persistent Context Memory**:
+   - All tool results stored in `@context` hash after each execution
+   - Prevents state loss between steps
+   - Context keys: `instrument`, `candles`, `candles_15m`, `structure_15m`, `trend`, `expiry`, `option_chain`
+
+2. **Argument Injection**:
+   - `resolve_arguments` method replaces LLM arguments with context values
+   - Tools receive only what Ruby determines from context
+   - No empty parameters, no invented values, no guessing
+
+3. **Tool Prerequisite Guards**:
+   - `TOOL_PREREQUISITES` defines required context for each tool
+   - `check_prerequisites` validates context before execution
+   - Prevents invalid tool calls
+
+4. **Auto-Injection for Critical Tools**:
+   - After 3 failed attempts, critical tools (`analyze_trend`, `fetch_expiry_list`, `analyze_structure_15m`) are auto-injected
+   - Prevents infinite loops when LLM fails to call tools
+
+5. **Sequential Execution**:
+   - Tools called one at a time
+   - Results stored immediately after execution
+   - Context updated before next tool call
 
 ### Running Tests
 
@@ -324,6 +357,9 @@ bundle exec rspec
 
 # Run with coverage
 COVERAGE=true bundle exec rspec
+
+# Run specific test file
+bundle exec rspec spec/vyapari/tools/analyze_trend_spec.rb
 ```
 
 ### Code Quality
@@ -334,6 +370,9 @@ bundle exec rubocop
 
 # Auto-fix issues
 bundle exec rubocop -a
+
+# Check specific file
+bundle exec rubocop lib/vyapari/options/agent.rb
 ```
 
 ### Interactive Console
@@ -355,87 +394,212 @@ bundle exec rake install
 bundle exec rake release
 ```
 
-## Project Structure
+### Adding New Indicators
 
-```
-vyapari/
-├── lib/
-│   ├── vyapari/
-│   │   ├── agent.rb           # Main agent orchestrator
-│   │   ├── client.rb          # Ollama API client
-│   │   ├── config.rb          # Configuration utilities
-│   │   ├── tools/             # Trading tools
-│   │   │   ├── base.rb
-│   │   │   ├── find_instrument.rb
-│   │   │   ├── fetch_intraday_history.rb
-│   │   │   ├── analyze_trend.rb
-│   │   │   ├── fetch_expiry_list.rb
-│   │   │   ├── fetch_option_chain.rb
-│   │   │   ├── recommend_trade.rb
-│   │   │   └── registry.rb
-│   │   └── version.rb
-│   ├── indicators/           # Technical indicators
-│   │   ├── rsi.rb
-│   │   ├── adx.rb
-│   │   └── ema.rb
-│   └── trading/              # Trading utilities
-│       └── risk.rb
-├── exe/
-│   └── vyapari               # Command-line executable
-├── INDICATORS.md           # Indicator documentation
-└── README.md
+1. **Using Library Indicators:**
+```ruby
+# In lib/vyapari/indicators/technical_analysis_adapter.rb
+def new_indicator(period: 14)
+  return nil if @intrinio_data.length < period
+  begin
+    TechnicalAnalysis::NewIndicator.calculate(@intrinio_data, period: period)
+  rescue ArgumentError
+    nil
+  end
+end
 ```
 
-## Key Design Principles
+2. **Custom Implementation:**
+```ruby
+# Create lib/vyapari/indicators/new_indicator.rb
+module Vyapari
+  module Indicators
+    class NewIndicator
+      def self.calculate(data, period: 14)
+        # Your calculation logic
+      end
+    end
+  end
+end
+```
 
-### Core Architecture Rule
+### Adding New Tools
 
-**"LLM chooses the tool. Ruby supplies the arguments."**
+1. **Create the tool:**
+```ruby
+# lib/vyapari/tools/new_tool.rb
+module Vyapari
+  module Tools
+    class NewTool < Base
+      def self.name = "new_tool"
 
-This is the fundamental principle that ensures reliability:
+      def self.schema
+        {
+          type: "function",
+          function: {
+            name: name,
+            description: "Tool description",
+            parameters: {
+              type: "object",
+              properties: {},
+              required: []
+            }
+          }
+        }
+      end
 
-- The LLM decides **WHICH** tool to call
-- Ruby decides **WHAT** arguments the tool gets
-- LLM-provided arguments are **completely ignored** once Ruby has context
-- All parameters are auto-injected from persistent context
+      def call(p)
+        # Tool implementation
+      end
+    end
+  end
+end
+```
 
-### Implementation Details
+2. **Register the tool:**
+```ruby
+# In agent's default_registry method
+registry.register(Tools::NewTool)
+```
 
-1. **Persistent Context Memory**:
-   - All tool results are stored in `@context` hash after each execution
-   - Prevents state loss between steps
-   - Context keys: `instrument`, `candles`, `trend`, `expiry`, `option_chain`
+3. **Add to prerequisites:**
+```ruby
+TOOL_PREREQUISITES = {
+  "new_tool" => [:required_context_key]
+}
+```
 
-2. **Argument Injection**:
-   - `resolve_arguments` method completely replaces LLM arguments with context values
-   - Tools receive only what Ruby determines from context
-   - No empty parameters, no invented values, no guessing
+4. **Add argument resolution:**
+```ruby
+# In resolve_arguments method
+when "new_tool"
+  raise "Missing context" unless @context[:required_context_key]
+  { "param" => @context[:required_context_key] }
+```
 
-3. **Tool Prerequisite Guards**:
-   - `TOOL_PREREQUISITES` defines required context for each tool
-   - `check_prerequisites` validates context before execution
-   - Prevents 90% of invalid tool calls
+5. **Add context storage:**
+```ruby
+# In store_in_context method
+when "new_tool"
+  @context[:result_key] = result
+```
 
-4. **Hardened System Prompt**:
-   - Explicit prohibition of code generation
-   - Explicit prohibition of text explanations
-   - "You are an autonomous trading planner" - only calls tools
-   - No guessing, no inventing values
+## Contributing
 
-5. **Sequential Execution**:
-   - Tools called one at a time
-   - Results stored immediately after execution
-   - Context updated before next tool call
+We welcome contributions! Please follow these guidelines:
+
+### Getting Started
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes
+4. Write/update tests
+5. Ensure all tests pass: `bundle exec rspec`
+6. Run linter: `bundle exec rubocop`
+7. Commit your changes: `git commit -am 'Add new feature'`
+8. Push to the branch: `git push origin feature/my-feature`
+9. Submit a pull request
+
+### Code Style
+
+- Follow Ruby style guide
+- Run RuboCop before committing
+- Write tests for new features
+- Update documentation for API changes
+
+### Testing Guidelines
+
+- Write unit tests for all new tools
+- Test error cases and edge conditions
+- Mock external API calls
+- Ensure tests are deterministic
+
+### Documentation
+
+- Update README.md for user-facing changes
+- Add code comments for complex logic
+- Update relevant .md files (INDICATORS.md, etc.)
+- Keep examples up to date
+
+### Pull Request Process
+
+1. Ensure all tests pass
+2. Update CHANGELOG.md
+3. Add/update documentation
+4. Request review from maintainers
+5. Address review feedback
+6. Maintainers will merge after approval
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for our code of conduct.
+
+## Configuration
+
+### Ollama Configuration
+
+Set the Ollama URL via environment variable:
+```bash
+export OLLAMA_URL=http://localhost:11434
+```
+
+Or pass a custom client to the agent:
+```ruby
+client = Vyapari::Client.new(url: "http://custom-ollama:11434")
+agent = Vyapari::Options::Agent.new(client: client)
+```
+
+### DhanHQ Configuration
+
+DhanHQ is configured via environment variables:
+- `DHAN_CLIENT_ID`: Your DhanHQ client ID
+- `DHAN_ACCESS_TOKEN`: Your DhanHQ access token
+- `DHAN_LOG_LEVEL`: Logging level (default: INFO)
+
+Configure programmatically:
+```ruby
+Vyapari::Config.configure_dhan!
+```
+
+### Logging
+
+Set log level via environment variable:
+```bash
+export VYAPARI_LOG_LEVEL=DEBUG  # DEBUG, INFO, WARN, ERROR
+```
 
 ## Troubleshooting
 
 ### Agent Not Converging
 
-If the agent exceeds `MAX_STEPS` (8), check:
+If the agent exceeds `MAX_STEPS` (15), check:
 - Ollama is running and accessible
 - DhanHQ credentials are valid
 - Network connectivity to APIs
 - Check logs for specific error messages
+- Verify all required tools are being called
+
+### Volume Indicator Errors
+
+If you see "wrong number of arguments" errors:
+- Volume indicators are wrapped in error handling
+- Analysis continues with price-based indicators only
+- Check that candles include volume data
+- Verify technical-analysis library is installed: `bundle install`
+
+### Missing Context Errors
+
+If tools report missing context:
+- Verify prerequisite tools are called first
+- Check `store_in_context` is updating context correctly
+- Ensure workflow is followed sequentially
+- Review logs to see which tool failed
+
+### LLM Refusing to Provide Analysis
+
+The agent is configured to provide insights based on available facts. If you see generic refusals:
+- The system prompt explicitly requires analysis
+- Tool results are automatically formatted
+- Final response should include all analysis results
+- Check that `recommend_trade` was called successfully
 
 ### Empty Parameters
 
@@ -443,17 +607,15 @@ If tools receive empty parameters:
 - Verify context is being stored correctly
 - Check `resolve_arguments` method in agent
 - Ensure prerequisite tools are called first
+- Review context hash contents in logs
 
-### Infinity Errors
+## Additional Documentation
 
-If you see "Infinity" errors:
-- Check premium/price values are valid
-- Verify position_size calculation handles zero/negative values
-- Review contract data structure
-
-## Contributing
-
-Bug reports and pull requests are welcome on GitHub at https://github.com/shubhamtaywade/vyapari.
+- [INDICATORS.md](INDICATORS.md) - Detailed indicator documentation
+- [INDICATORS_COMPARISON.md](INDICATORS_COMPARISON.md) - Library comparison and indicator mapping
+- [VOLUME_INDICATORS.md](VOLUME_INDICATORS.md) - Volume indicators usage guide
+- [SWING_UNIVERSE.md](SWING_UNIVERSE.md) - Swing trading universe documentation
+- [CHANGELOG.md](CHANGELOG.md) - Version history
 
 ## License
 
@@ -464,3 +626,10 @@ The gem is available as open source under the terms of the [MIT License](https:/
 **Shubham Taywade**
 - Email: shubhamtaywade82@gmail.com
 - GitHub: [@shubhamtaywade](https://github.com/shubhamtaywade)
+
+## Acknowledgments
+
+- [DhanHQ](https://dhanhq.com/) for market data API
+- [Ollama](https://ollama.ai/) for LLM infrastructure
+- [intrinio/technical-analysis](https://github.com/intrinio/technical-analysis) for comprehensive indicators
+- [ruby-technical-analysis](https://github.com/johnnypaper/ruby-technical-analysis) for unique indicators

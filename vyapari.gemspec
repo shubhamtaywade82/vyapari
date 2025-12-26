@@ -33,8 +33,11 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of your gem
-  # spec.add_dependency "example-gem", "~> 1.0"
+  # Technical analysis libraries for volume-based indicators
+  # intrinio/technical-analysis - Comprehensive indicator library
+  spec.add_dependency "technical-analysis", "~> 0.1"
+  # ruby-technical-analysis - Additional indicators (IMI, Chande Momentum, etc.)
+  spec.add_dependency "ruby-technical-analysis", "~> 1.0"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

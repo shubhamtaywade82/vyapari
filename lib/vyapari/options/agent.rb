@@ -6,13 +6,15 @@ module Vyapari
   module Options
     # Options trading agent - handles options buying workflow
     class Agent
-      MAX_STEPS = 8
+      MAX_STEPS = 15
 
       TOOL_PREREQUISITES = {
         "fetch_intraday_history" => [:instrument],
+        "analyze_structure_15m" => [:candles_15m],
         "analyze_trend" => [:candles],
         "fetch_expiry_list" => [:instrument],
-        "fetch_option_chain" => [:instrument, :trend, :expiry]
+        "fetch_option_chain" => %i[instrument trend expiry],
+        "recommend_trade" => [:trend] # option_chain is optional when trend is "avoid"
       }.freeze
 
       def initialize(client: Client.new, registry: default_registry, logger: nil)
@@ -26,6 +28,8 @@ module Vyapari
         @context = {
           instrument: nil,
           candles: nil,
+          candles_15m: nil,
+          structure_15m: nil,
           trend: nil,
           expiry: nil,
           option_chain: nil
@@ -48,16 +52,18 @@ module Vyapari
 
             CRITICAL: You MUST ONLY use the provided tools. DO NOT write code, DO NOT generate Python scripts, DO NOT hallucinate functions. ONLY call the available tools.
 
-            Available tools: find_instrument, fetch_intraday_history, analyze_trend, fetch_expiry_list, fetch_option_chain, recommend_trade
+            Available tools: find_instrument, fetch_intraday_history, analyze_structure_15m, analyze_trend, fetch_expiry_list, fetch_option_chain, recommend_trade
 
             You MUST follow this exact stepwise workflow. Call tools ONE AT A TIME, waiting for results before proceeding:
 
             STEP 1: Call find_instrument tool - For indices (NIFTY, BANKNIFTY), use exchange_segment="IDX_I". For stocks, use NSE_EQ or BSE_EQ.
-            STEP 2: Call fetch_intraday_history tool - Parameters are auto-filled from context, call with empty parameters: {}
-            STEP 3: Call analyze_trend tool - Parameters are auto-filled from context, call with empty parameters: {}
-            STEP 4: Call fetch_expiry_list tool - Parameters are auto-injected from context, call with empty parameters: {}
-            STEP 5: Call fetch_option_chain tool - ONLY if step 3 returns trend="bullish" or "bearish" (NOT "avoid"). Parameters are auto-filled from context, call with empty parameters: {}
-            STEP 6: Call recommend_trade tool - Parameters are auto-filled from context, call with empty parameters: {}
+            STEP 2: Call fetch_intraday_history tool with interval="15" to fetch 15-minute candles - Parameters are auto-filled from context, but you MUST specify interval="15" for 15m candles
+            STEP 2A: Call analyze_structure_15m tool - Analyzes 15m structure. Returns: bullish, bearish, or range. If result is 'range' (valid=false), STOP and call recommend_trade with NO_TRADE. Parameters are auto-filled from context, call with empty parameters: {}
+            STEP 3: Call fetch_intraday_history tool with interval="5" to fetch 5-minute candles - Parameters are auto-filled from context, but you MUST specify interval="5" for 5m candles
+            STEP 4: Call analyze_trend tool - Parameters are auto-filled from context, call with empty parameters: {}
+            STEP 5: Call fetch_expiry_list tool - Parameters are auto-injected from context, call with empty parameters: {}
+            STEP 6: Call fetch_option_chain tool - Parameters are auto-filled from context, call with empty parameters: {}
+            STEP 7: Call recommend_trade tool - Parameters are auto-filled from context, call with empty parameters: {}
 
             ABSOLUTE RULES (NO EXCEPTIONS):
             - NEVER write code or generate scripts (Ruby, Python, or any language)
@@ -70,14 +76,23 @@ module Vyapari
             - DO NOT provide text responses between tool calls - just call the next tool directly
             - Parameters are automatically resolved from context - you only need to call tools with empty parameters: {}
             - For NIFTY/BANKNIFTY, use exchange_segment="IDX_I" in find_instrument
-            - If analyze_trend returns "avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade
+            - You can call fetch_option_chain even if analyze_trend returns "avoid"
             - Continue until recommend_trade is called - that's the final step
 
-            Sequence: find_instrument → fetch_intraday_history → analyze_trend → fetch_expiry_list → fetch_option_chain → recommend_trade
+            Sequence: find_instrument → fetch_intraday_history(15m) → analyze_structure_15m → fetch_intraday_history(5m) → analyze_trend → fetch_expiry_list → fetch_option_chain → recommend_trade
 
-            NOTE: If analyze_trend returns trend="avoid", skip fetch_expiry_list and fetch_option_chain, go directly to recommend_trade.
+            CRITICAL: If analyze_structure_15m returns structure="range" (valid=false), STOP immediately and call recommend_trade with NO_TRADE. Do NOT proceed to analyze_trend or fetch_option_chain.
 
-            REMEMBER: You are an autonomous trading planner. Your ONLY job is to call tools. No code. No explanations. No guessing.
+            NOTE: You can call fetch_option_chain even if trend is "avoid" - it will still fetch the option chain data.
+
+            FINAL RESPONSE RULES:
+            - When the workflow is complete (after recommend_trade is called), provide a concise summary of the analysis and the trade recommendation.
+            - If the recommendation is NO_TRADE, explain why based on the analysis (e.g., "Market is choppy due to low ADX and unclear EMA alignment").
+            - DO NOT provide generic responses like "I cannot provide financial advice." or "Is there anything else I can help you with?".
+            - Your final response MUST be a direct summary of the analysis and recommendation based on available facts.
+            - Include key indicators (RSI, ADX, EMA, volume trends) and their interpretation in your final response.
+
+            REMEMBER: You are an autonomous trading planner. Your ONLY job is to call tools until recommend_trade completes, then provide analysis insights. No code. No generic refusals. Provide actionable insights based on available facts.
           PROMPT
         }
 
@@ -138,31 +153,39 @@ module Vyapari
               @correction_count[next_tool] ||= 0
               @correction_count[next_tool] += 1
 
-              # If we've corrected 3+ times for the same tool, auto-inject the tool call
-              if @correction_count[next_tool] >= 3 && next_tool == "fetch_expiry_list"
+              # If we've corrected 3+ times for critical tools, auto-inject the tool call
+              # Critical tools that can be auto-injected: analyze_trend, fetch_expiry_list, analyze_structure_15m
+              auto_injectable_tools = %w[analyze_trend fetch_expiry_list analyze_structure_15m]
+
+              if @correction_count[next_tool] >= 3 && auto_injectable_tools.include?(next_tool)
                 @logger.warn "     🔧 Auto-injecting #{next_tool} tool call after #{@correction_count[next_tool]} failed attempts"
 
-                # Manually inject tool call
-                tool_class = @registry.fetch(next_tool)
-                resolved_args = resolve_arguments(next_tool, {})
-                check_prerequisites(next_tool)
+                begin
+                  # Manually inject tool call
+                  tool_class = @registry.fetch(next_tool)
+                  resolved_args = resolve_arguments(next_tool, {})
+                  check_prerequisites(next_tool)
 
-                tool = tool_class.new
-                result = tool.call(resolved_args)
-                store_in_context(next_tool, result)
+                  tool = tool_class.new
+                  result = tool.call(resolved_args)
+                  store_in_context(next_tool, result, resolved_args)
 
-                @tools_called << next_tool
-                @correction_count[next_tool] = 0 # Reset counter
+                  @tools_called << next_tool
+                  @correction_count[next_tool] = 0 # Reset counter
 
-                @messages << {
-                  role: "tool",
-                  tool_call_id: "auto-#{next_tool}-#{Time.now.to_i}",
-                  content: result.is_a?(String) ? result : result.to_json
-                }
+                  @messages << {
+                    role: "tool",
+                    tool_call_id: "auto-#{next_tool}-#{Time.now.to_i}",
+                    content: result.is_a?(String) ? result : result.to_json
+                  }
 
-                result_summary = result.is_a?(Hash) ? result.keys.join(", ") : result.to_s[0..100]
-                @logger.info "     ✅ Auto-injected result: #{result_summary}"
-                next
+                  result_summary = result.is_a?(Hash) ? result.keys.join(", ") : result.to_s[0..100]
+                  @logger.info "     ✅ Auto-injected result: #{result_summary}"
+                  next
+                rescue StandardError => e
+                  @logger.error "     ❌ Auto-injection failed for #{next_tool}: #{e.message}"
+                  # Fall through to correction message
+                end
               end
 
               correction = build_correction_message(next_tool, last_result)
@@ -176,7 +199,8 @@ module Vyapari
             end
 
             # Only return if workflow is complete and no continuation intent
-            @logger.info "✅ Options agent completed. Final response: #{msg["content"]}"
+            content_length = msg["content"].to_s.length
+            @logger.info "✅ Options agent completed. Final response length: #{content_length} chars"
             return msg["content"]
           end
 
@@ -216,20 +240,20 @@ module Vyapari
             @logger.info "     Parameters: #{parsed_args.inspect}"
 
             begin
+              # Check prerequisites before resolving arguments
+              check_prerequisites(tool_name)
+
               # Resolve arguments from context (LLM decides tool, Ruby decides args)
               resolved_args = resolve_arguments(tool_name, parsed_args)
               @logger.info "     Resolved Parameters: #{resolved_args.inspect}"
-
-              # Check prerequisites before calling tool
-              check_prerequisites(tool_name)
 
               tool_class = @registry.fetch(tool_name)
               tool = tool_class.new
 
               result = tool.call(resolved_args)
 
-              # Store result in context
-              store_in_context(tool_name, result)
+              # Store result in context (pass resolved_args to track interval for fetch_intraday_history)
+              store_in_context(tool_name, result, resolved_args)
 
               result_summary = result.is_a?(Hash) ? result.keys.join(", ") : result.to_s[0..100]
               @logger.info "     ✅ Result: #{result_summary}"
@@ -246,26 +270,30 @@ module Vyapari
 
               error_handled = false
 
-              # Special handling for fetch_option_chain errors
-              if tool_name == "fetch_option_chain"
+              # Special handling for analyze_structure_15m errors
+              if tool_name == "analyze_structure_15m"
                 error_msg = e.message.to_s
-
-                # If trend is "avoid", guide to recommend_trade instead
-                if error_msg.include?("trend is 'avoid'") || parsed_args["trend"] == "avoid" || parsed_args["trend"].to_s.downcase == "avoid"
+                if error_msg.include?("Missing candles_15m") || error_msg.include?("candles_15m")
                   @messages << {
                     role: "user",
-                    content: "You tried to call fetch_option_chain with trend='avoid'. DO NOT call fetch_option_chain when trend is 'avoid'. Instead, call recommend_trade with trend='avoid' to get NO_TRADE recommendation."
+                    content: "You tried to call analyze_structure_15m but 15-minute candles are missing. You MUST call fetch_intraday_history with interval='15' first to fetch 15-minute candles. Call fetch_intraday_history with interval='15' now."
                   }
-                  @logger.info "     🔄 Redirecting to recommend_trade (trend is avoid)..."
+                  @logger.info "     🔄 Guiding to fetch_intraday_history with interval='15'..."
                   error_handled = true
                   break
                 end
+              end
+
+              # Special handling for fetch_option_chain errors
+              if tool_name == "fetch_option_chain"
+                error_msg = e.message.to_s
 
                 # If symbol is empty, provide specific guidance
                 if error_msg.include?("symbol parameter is required") || parsed_args["symbol"].to_s.strip.empty?
                   # Try to extract symbol from find_instrument result
                   inst_result = @messages.reverse.find do |m|
                     next unless m["role"] == "tool"
+
                     begin
                       data = JSON.parse(m["content"])
                       data["security_id"] || data["instrument"]
@@ -282,6 +310,7 @@ module Vyapari
                       # Also get trend from analyze_trend
                       trend_result = @messages.reverse.find do |m|
                         next unless m["role"] == "tool"
+
                         begin
                           data = JSON.parse(m["content"])
                           data["trend"]
@@ -300,17 +329,11 @@ module Vyapari
                         end
                       end
 
-                      if trend_value == "avoid"
-                        @messages << {
-                          role: "user",
-                          content: "The trend is 'avoid'. DO NOT call fetch_option_chain. Instead, call recommend_trade with trend='avoid' to get NO_TRADE recommendation."
-                        }
-                      else
-                        @messages << {
-                          role: "user",
-                          content: "The symbol parameter is empty. Use symbol='#{symbol_value}' (from find_instrument result - the 'instrument' field), trend='#{trend_value || "bullish/bearish"}' (from analyze_trend result), and expiry='' for auto-selection."
-                        }
-                      end
+                      # Allow fetch_option_chain even with "avoid" trend
+                      @messages << {
+                        role: "user",
+                        content: "The symbol parameter is empty. Use symbol='#{symbol_value}' (from find_instrument result - the 'instrument' field), trend='#{trend_value || "bullish/bearish"}' (from analyze_trend result), and expiry='' for auto-selection."
+                      }
                       @logger.info "     🔄 Providing symbol value: #{symbol_value}..."
                       error_handled = true
                       break
@@ -341,6 +364,7 @@ module Vyapari
         registry.register(Tools::RecommendTrade)
         registry.register(Tools::FetchOptionChain)
         registry.register(Tools::AnalyzeTrend)
+        registry.register(Tools::AnalyzeStructure15m)
         registry.register(Tools::FetchIntradayHistory)
         registry.register(Tools::FindInstrument)
         registry.register(Tools::FetchExpiryList)
@@ -358,41 +382,52 @@ module Vyapari
       end
 
       def determine_next_tool
-        workflow = %w[find_instrument fetch_intraday_history analyze_trend fetch_option_chain recommend_trade]
+        # Step 1: find_instrument
+        return "find_instrument" unless @tools_called.include?("find_instrument")
 
-        # Find the first tool in workflow that hasn't been called
-        next_tool = workflow.find { |tool| !@tools_called.include?(tool) }
+        # Step 2: First fetch_intraday_history (15m)
+        fetch_count = @tools_called.count("fetch_intraday_history")
+        return "fetch_intraday_history" if fetch_count == 0
 
-        # Special handling after analyze_trend
-        if @tools_called.include?("analyze_trend")
-          # Check analyze_trend result to see if trend was avoid
-          # Find the analyze_trend result specifically (look for messages with "trend" field)
-          trend_result = @messages.reverse.find do |m|
-            next unless m["role"] == "tool"
-            begin
-              data = JSON.parse(m["content"])
-              data["trend"] # This is likely analyze_trend result
-            rescue JSON::ParserError
-              false
-            end
+        # Step 2A: analyze_structure_15m
+        return "analyze_structure_15m" unless @tools_called.include?("analyze_structure_15m")
+
+        # After analyze_structure_15m, check if structure is valid
+        structure_result = @messages.reverse.find do |m|
+          next unless m["role"] == "tool"
+
+          begin
+            data = JSON.parse(m["content"])
+            data["structure"] # This is likely analyze_structure_15m result
+          rescue JSON::ParserError
+            false
           end
-
-          if trend_result
-            begin
-              result = JSON.parse(trend_result["content"])
-              if result["trend"] == "avoid"
-                # Skip fetch_expiry_list and fetch_option_chain if trend is avoid
-                return "recommend_trade" unless @tools_called.include?("recommend_trade")
-              end
-            rescue JSON::ParserError
-              # Not JSON, continue
-            end
-          end
-          # If trend is not avoid, need expiry list first, then option chain
-          return "fetch_expiry_list" unless @tools_called.include?("fetch_expiry_list")
-          return "fetch_option_chain" unless @tools_called.include?("fetch_option_chain")
-          return "recommend_trade" unless @tools_called.include?("recommend_trade")
         end
+
+        if structure_result
+          begin
+            result = JSON.parse(structure_result["content"])
+            if (result["structure"] == "range" || result["valid"] == false) && !@tools_called.include?("recommend_trade")
+              # Structure is range/invalid - stop and go to recommend_trade
+              return "recommend_trade"
+            end
+          rescue JSON::ParserError
+            # Not JSON, continue
+          end
+        end
+
+        # Step 3: Second fetch_intraday_history (5m) - only if structure is valid
+        return "fetch_intraday_history" if fetch_count < 2
+
+        # Step 4: analyze_trend
+        return "analyze_trend" unless @tools_called.include?("analyze_trend")
+
+        # Allow fetch_option_chain even with "avoid" trend - continue workflow normally
+        # Previously skipped fetch_expiry_list and fetch_option_chain when trend was "avoid"
+        # Now we allow the full workflow regardless of trend value
+        return "fetch_expiry_list" unless @tools_called.include?("fetch_expiry_list")
+        return "fetch_option_chain" unless @tools_called.include?("fetch_option_chain")
+        return "recommend_trade" unless @tools_called.include?("recommend_trade")
 
         next_tool || "recommend_trade"
       end
@@ -418,28 +453,30 @@ module Vyapari
             base += " Use security_id, exchange_segment, and instrument from find_instrument result, and interval='5' (as a string)."
           end
         when "analyze_trend"
+          base = "CRITICAL: You MUST call the analyze_trend tool NOW. DO NOT write any text, code, or explanations. ONLY call the tool. Parameters are automatically injected from context - call with empty parameters: {}. The candles array is already available in context from fetch_intraday_history."
+
           if last_result
             begin
               hist_data = JSON.parse(last_result["content"])
               if hist_data["candles"] && !hist_data["candles"].empty?
-                base += " Use the 'candles' array from fetch_intraday_history result. The candles field contains an array of candle objects. Pass the entire candles array (not a string representation)."
+                base += " The candles array has #{hist_data["candles"].length} candles. Just call analyze_trend with empty parameters: {}."
               else
-                base += " The fetch_intraday_history returned empty candles. This means no data is available. You should still call analyze_trend with the empty array - it will return 'avoid' trend."
+                base += " Even if candles are empty, you MUST still call analyze_trend with empty parameters: {}. It will return 'avoid' trend."
               end
             rescue JSON::ParserError
-              base += " Use the 'candles' array from fetch_intraday_history result. Extract the 'candles' field (which is an array) and pass it directly."
+              base += " Call analyze_trend with empty parameters: {}. All data is auto-injected."
             end
           else
-            base += " Use the 'candles' array from fetch_intraday_history result. Extract the 'candles' field (which is an array) and pass it directly."
+            base += " Call analyze_trend with empty parameters: {}. All data is auto-injected from context."
           end
         when "fetch_option_chain"
           # Extract symbol from find_instrument and trend from analyze_trend
           symbol_value = nil
-          trend_value = nil
 
           # Find find_instrument result (look for messages with security_id or instrument field)
           @messages.reverse.each do |msg|
             next unless msg["role"] == "tool"
+
             begin
               data = JSON.parse(msg["content"])
               if data["security_id"] || data["instrument"] # This is likely find_instrument result
@@ -455,6 +492,7 @@ module Vyapari
           trend_value = nil
           @messages.reverse.each do |msg|
             next unless msg["role"] == "tool"
+
             begin
               data = JSON.parse(msg["content"])
               if data["trend"] # This is likely analyze_trend result
@@ -472,12 +510,10 @@ module Vyapari
             else
               base += " Use symbol='#{symbol_value}' (from find_instrument result - the 'instrument' field), trend='#{trend_value}' (from analyze_trend result), and expiry='' (empty string for auto-selection). DO NOT pass exchange_segment, instrument, security_id, candles, interval, or strike_price."
             end
+          elsif trend_value == "avoid"
+            base = "DO NOT call fetch_option_chain when trend is 'avoid'. Instead, call recommend_trade with trend='avoid' to get NO_TRADE recommendation."
           else
-            if trend_value == "avoid"
-              base = "DO NOT call fetch_option_chain when trend is 'avoid'. Instead, call recommend_trade with trend='avoid' to get NO_TRADE recommendation."
-            else
-              base += " Use symbol from find_instrument result (the 'instrument' field - NOT empty string), trend from analyze_trend result (the 'trend' field - must be 'bullish' or 'bearish', NOT 'avoid'), and expiry='' (empty string for auto-selection). DO NOT pass exchange_segment, instrument, security_id, candles, interval, or strike_price."
-            end
+            base += " Use symbol from find_instrument result (the 'instrument' field - NOT empty string), trend from analyze_trend result (the 'trend' field - must be 'bullish' or 'bearish', NOT 'avoid'), and expiry='' (empty string for auto-selection). DO NOT pass exchange_segment, instrument, security_id, candles, interval, or strike_price."
           end
         when "fetch_expiry_list"
           base = "You MUST call the fetch_expiry_list tool NOW. Parameters (symbol, security_id, exchange_segment) are automatically injected from context - just call the tool with empty parameters: {}. Do not provide any text response, just call the tool."
@@ -495,34 +531,83 @@ module Vyapari
           args
 
         when "fetch_intraday_history"
-          # Inject from context - LLM params are completely ignored
+          # Inject from context - but allow interval to be specified by LLM for 15m vs 5m
           raise "Missing instrument context" unless @context[:instrument]
+
+          interval = args["interval"] || args[:interval] || "5" # Default to 5m, but allow LLM to specify 15m
           {
             "security_id" => @context[:instrument]["security_id"] || @context[:instrument][:security_id],
             "exchange_segment" => @context[:instrument]["exchange_segment"] || @context[:instrument][:exchange_segment],
             "instrument" => @context[:instrument]["instrument"] || @context[:instrument][:instrument],
-            "interval" => "5" # Fixed value, LLM args ignored
+            "interval" => interval.to_s
           }
+
+        when "analyze_structure_15m"
+          # Inject 15m candles from context - LLM params are ignored
+          unless @context[:candles_15m]
+            raise "Missing candles_15m context. You must call fetch_intraday_history with interval='15' first to fetch 15-minute candles."
+          end
+
+          { "candles" => @context[:candles_15m] }
 
         when "analyze_trend"
           # Inject candles from context - LLM params are ignored
           raise "Missing candles context" unless @context[:candles]
+
           { "candles" => @context[:candles] }
 
         when "fetch_expiry_list"
           # Inject underlying_seg and underlying_scrip from context
           raise "Missing instrument context" unless @context[:instrument]
+
           inst = @context[:instrument]
-          underlying_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
-          underlying_scrip = inst["security_id"] || inst[:security_id]
-          # Use stored symbol (original user input like "NIFTY"), not instrument type ("INDEX")
+          original_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
+          original_scrip = inst["security_id"] || inst[:security_id]
+          # Use stored symbol (original user input like "NIFTY" or "RELIANCE")
           symbol = inst["symbol"] || inst[:symbol] || inst["instrument"] || inst[:instrument]
+
+          # Convert equity segment to FNO segment for stocks
+          # For indices (IDX_I), keep as is
+          # For stocks (NSE_EQ -> NSE_FNO, BSE_EQ -> BSE_FNO)
+          underlying_seg = case original_seg.to_s
+                           when "NSE_EQ"
+                             "NSE_FNO"
+                           when "BSE_EQ"
+                             "BSE_FNO"
+                           when "IDX_I"
+                             "IDX_I"
+                           else
+                             original_seg # Keep as is for other segments
+                           end
+
+          # For stocks, we need to find the FNO instrument to get the correct security_id
+          # For indices, use the same security_id
+          if %w[NSE_FNO BSE_FNO].include?(underlying_seg)
+            begin
+              # Find the FNO instrument using the same symbol
+              fno_inst = DhanHQ::Models::Instrument.find(underlying_seg, symbol.to_s.upcase)
+              if fno_inst
+                underlying_scrip = fno_inst.security_id.to_i
+                @logger.info "Found FNO instrument for expiry list: #{symbol} -> #{underlying_seg}:#{underlying_scrip}"
+              else
+                # Fallback: try to use original security_id (may not work, but worth trying)
+                @logger.warn "FNO instrument not found for #{symbol}, using original security_id: #{original_scrip}"
+                underlying_scrip = original_scrip.to_i if original_scrip
+              end
+            rescue StandardError => e
+              @logger.warn "Error finding FNO instrument for #{symbol}: #{e.message}, using original security_id"
+              underlying_scrip = original_scrip.to_i if original_scrip
+            end
+          elsif original_scrip
+            # For indices, use the same security_id
+            underlying_scrip = original_scrip.to_i
+          end
 
           # Provide both underlying_scrip (for OptionChain.fetch_expiry_list) and symbol (for fallback)
           args = {
             "underlying_seg" => underlying_seg
           }
-          args["underlying_scrip"] = underlying_scrip.to_i if underlying_scrip
+          args["underlying_scrip"] = underlying_scrip if underlying_scrip
           args["symbol"] = symbol if symbol
 
           raise "Missing both security_id and symbol in instrument context" unless underlying_scrip || symbol
@@ -536,16 +621,53 @@ module Vyapari
           raise "Missing expiry context" unless @context[:expiry]
 
           inst = @context[:instrument]
-          underlying_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
-          underlying_scrip = inst["security_id"] || inst[:security_id]
-          # Use stored symbol (original user input like "NIFTY"), not instrument type ("INDEX")
+          original_seg = inst["exchange_segment"] || inst[:exchange_segment] || "IDX_I"
+          original_scrip = inst["security_id"] || inst[:security_id]
+          # Use stored symbol (original user input like "NIFTY" or "RELIANCE")
           symbol = inst["symbol"] || inst[:symbol] || inst["instrument"] || inst[:instrument]
 
-          raise "Missing security_id in instrument context" unless underlying_scrip
+          raise "Missing security_id in instrument context" unless original_scrip
+
+          # Convert equity segment to FNO segment for stocks
+          # For indices (IDX_I), keep as is
+          # For stocks (NSE_EQ -> NSE_FNO, BSE_EQ -> BSE_FNO)
+          underlying_seg = case original_seg.to_s
+                           when "NSE_EQ"
+                             "NSE_FNO"
+                           when "BSE_EQ"
+                             "BSE_FNO"
+                           when "IDX_I"
+                             "IDX_I"
+                           else
+                             original_seg # Keep as is for other segments
+                           end
+
+          # For stocks, we need to find the FNO instrument to get the correct security_id
+          # For indices, use the same security_id
+          if %w[NSE_FNO BSE_FNO].include?(underlying_seg)
+            begin
+              # Find the FNO instrument using the same symbol
+              fno_inst = DhanHQ::Models::Instrument.find(underlying_seg, symbol.to_s.upcase)
+              if fno_inst
+                underlying_scrip = fno_inst.security_id.to_i
+                @logger.info "Found FNO instrument: #{symbol} -> #{underlying_seg}:#{underlying_scrip}"
+              else
+                # Fallback: try to use original security_id (may not work, but worth trying)
+                @logger.warn "FNO instrument not found for #{symbol}, using original security_id: #{original_scrip}"
+                underlying_scrip = original_scrip.to_i
+              end
+            rescue StandardError => e
+              @logger.warn "Error finding FNO instrument for #{symbol}: #{e.message}, using original security_id"
+              underlying_scrip = original_scrip.to_i
+            end
+          else
+            # For indices, use the same security_id
+            underlying_scrip = original_scrip.to_i
+          end
 
           {
             "underlying_seg" => underlying_seg,
-            "underlying_scrip" => underlying_scrip.to_i,
+            "underlying_scrip" => underlying_scrip,
             "symbol" => symbol, # Keep for fallback
             "expiry" => @context[:expiry],
             "trend" => @context[:trend]
@@ -554,8 +676,16 @@ module Vyapari
         when "recommend_trade"
           # Inject all from context - LLM params are ignored
           raise "Missing trend context" unless @context[:trend]
-          raise "Missing option_chain context" unless @context[:option_chain]
-          { "trend" => @context[:trend], "options" => @context[:option_chain] }
+
+          # If trend is "avoid", option_chain is not required
+          trend_value = @context[:trend].to_s.downcase
+          if %w[avoid choppy].include?(trend_value)
+            { "trend" => @context[:trend], "options" => nil }
+          else
+            raise "Missing option_chain context" unless @context[:option_chain]
+
+            { "trend" => @context[:trend], "options" => @context[:option_chain] }
+          end
 
         else
           args
@@ -566,6 +696,15 @@ module Vyapari
         required = TOOL_PREREQUISITES[tool_name] || []
         return if required.empty?
 
+        # Special handling for recommend_trade - option_chain not required if trend is "avoid"
+        if tool_name == "recommend_trade" && required.include?(:option_chain)
+          trend_value = @context[:trend].to_s.downcase
+          if %w[avoid choppy].include?(trend_value)
+            # Remove option_chain from required when trend is avoid
+            required = required.reject { |k| k == :option_chain }
+          end
+        end
+
         # Check if context keys are present (not nil)
         # In plain Ruby, we check for truthiness (nil and false are falsy)
         missing = required.reject { |k| @context[k] }
@@ -575,14 +714,28 @@ module Vyapari
         raise "Tool #{tool_name} called without required context: #{missing_keys}. Call prerequisite tools first."
       end
 
-      def store_in_context(tool_name, result)
+      def store_in_context(tool_name, result, resolved_args = {})
         case tool_name
         when "find_instrument"
           @context[:instrument] = result.is_a?(Hash) ? result : JSON.parse(result)
 
         when "fetch_intraday_history"
           data = result.is_a?(Hash) ? result : JSON.parse(result)
-          @context[:candles] = data["candles"] || data[:candles] || data
+          candles = data["candles"] || data[:candles] || data
+          # Store based on interval: "15" -> candles_15m, "5" -> candles
+          interval = resolved_args["interval"] || resolved_args[:interval] || "5"
+          if interval.to_s == "15"
+            @context[:candles_15m] = candles
+          else
+            @context[:candles] = candles
+          end
+
+        when "analyze_structure_15m"
+          data = result.is_a?(Hash) ? result : JSON.parse(result)
+          @context[:structure_15m] = data
+
+          # If structure is "range" (invalid), set trend to "avoid" to skip further analysis
+          @context[:trend] = "avoid" if data["structure"] == "range" || data["valid"] == false
 
         when "analyze_trend"
           data = result.is_a?(Hash) ? result : JSON.parse(result)
@@ -632,4 +785,3 @@ module Vyapari
     end
   end
 end
-
