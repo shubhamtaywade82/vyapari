@@ -80,9 +80,9 @@ module Vyapari
           )
         rescue StandardError => e
           puts "   ⚠️  Enhanced tools registration failed: #{e.message}"
-          # Fallback to DhanComplete (uses DhanHQ::Models directly)
-          if defined?(Ollama::Agent::Tools::DhanComplete)
-            Ollama::Agent::Tools::DhanComplete.register_all(
+          # Fallback to DhanTools (uses DhanHQ::Models directly)
+          if defined?(Ollama::Agent::Tools::DhanTools)
+            Ollama::Agent::Tools::DhanTools.register_all(
               registry: registry,
               dhan_client: dhan_client # Can be nil, tools use DhanHQ::Models
             )

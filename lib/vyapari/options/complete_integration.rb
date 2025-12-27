@@ -6,7 +6,7 @@
 require_relative "trading_state_machine"
 require_relative "phased_agent"
 require_relative "agent_prompts"
-require_relative "../../ollama/agent/tools/dhan_complete"
+require_relative "../../ollama/agent/tools/dhan_tools"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
 require_relative "../tools/tool_registry_adapter"
@@ -31,9 +31,9 @@ module Vyapari
             dhan_client: nil # Pass actual dhan_client if available
           )
         rescue StandardError => e
-          # Fallback to legacy DhanComplete if enhanced tools fail
+          # Fallback to legacy DhanTools if enhanced tools fail
           @logger&.warn("Enhanced tools registration failed, using legacy: #{e.message}")
-          Ollama::Agent::Tools::DhanComplete.register_all(registry: registry)
+          Ollama::Agent::Tools::DhanTools.register_all(registry: registry)
         end
 
         # 3. Create safety gate

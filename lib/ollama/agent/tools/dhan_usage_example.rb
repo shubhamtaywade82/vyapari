@@ -5,7 +5,7 @@
 
 require_relative "../tool_registry"
 require_relative "../safety_gate"
-require_relative "dhan_complete"
+require_relative "dhan_tools"
 
 module Ollama
   class Agent
@@ -18,7 +18,7 @@ module Ollama
 
           # 2. Register ALL DhanHQ tools
           # Note: cache_store would be your WebSocket cache implementation
-          DhanComplete.register_all(
+          DhanTools.register_all(
             registry: registry,
             dhan_client: nil, # Will use DhanHQ::Models directly
             cache_store: nil  # Optional: WebSocket cache
@@ -51,7 +51,7 @@ module Ollama
         # Example: Market data workflow
         def self.example_market_data_workflow
           registry = ToolRegistry.new
-          DhanComplete.register_market_data_tools(registry, nil)
+          DhanTools.register_market_data_tools(registry, nil)
 
           # Find instrument
           result = registry.call("dhan.instrument.find", {
@@ -73,7 +73,7 @@ module Ollama
         # Example: Options trading workflow
         def self.example_options_workflow
           registry = ToolRegistry.new
-          DhanComplete.register_all(registry: registry)
+          DhanTools.register_all(registry: registry)
 
           # 1. Get expiries
           expiries = registry.call("dhan.option.expiries", {
@@ -116,7 +116,7 @@ module Ollama
         # Example: Account state check
         def self.example_account_check
           registry = ToolRegistry.new
-          DhanComplete.register_account_tools(registry, nil)
+          DhanTools.register_account_tools(registry, nil)
 
           # Check funds
           funds = registry.call("dhan.funds.balance", {})

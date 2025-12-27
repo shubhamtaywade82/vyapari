@@ -5,7 +5,7 @@
 
 require_relative "phased_agent"
 require_relative "state_machine"
-require_relative "../../ollama/agent/tools/dhan_complete"
+require_relative "../../ollama/agent/tools/dhan_tools"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
 
@@ -15,7 +15,7 @@ module Vyapari
       def self.setup_complete_system
         # 1. Create tool registry with all DhanHQ tools
         registry = Ollama::Agent::ToolRegistry.new
-        Ollama::Agent::Tools::DhanComplete.register_all(registry: registry)
+        Ollama::Agent::Tools::DhanTools.register_all(registry: registry)
 
         # 2. Create safety gate
         safety_gate = Ollama::Agent::SafetyGate.new(

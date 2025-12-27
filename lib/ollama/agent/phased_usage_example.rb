@@ -5,7 +5,7 @@
 
 require_relative "phased_agent"
 require_relative "iteration_limits"
-require_relative "../tools/dhan_complete"
+require_relative "../tools/dhan_tools"
 require_relative "../tool_registry"
 require_relative "../safety_gate"
 
@@ -15,7 +15,7 @@ module Ollama
       def self.setup_complete_system
         # 1. Create tool registry with all DhanHQ tools
         registry = ToolRegistry.new
-        Tools::DhanComplete.register_all(registry: registry)
+        Tools::DhanTools.register_all(registry: registry)
 
         # 2. Create safety gate
         safety_gate = SafetyGate.new(

@@ -6,7 +6,7 @@
 require_relative "enhanced_dhan_tools"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/tool_descriptor"
-require_relative "../../ollama/agent/tools/dhan_complete"
+require_relative "../../ollama/agent/tools/dhan_tools"
 
 module Vyapari
   module Tools
@@ -59,12 +59,12 @@ module Vyapari
         )
       end
 
-      # Get handler for a tool (delegates to DhanComplete or creates stub)
+      # Get handler for a tool (delegates to DhanTools or creates stub)
       # @param tool_name [String] Tool name
       # @param dhan_client [Object, nil] DhanHQ client
       # @return [Proc] Tool handler
       def self.get_handler_for_tool(tool_name, dhan_client)
-        # If DhanHQ::Models is available, use DhanComplete handlers (they use Models directly)
+        # If DhanHQ::Models is available, use DhanTools handlers (they use Models directly)
         return get_dhan_complete_handler(tool_name) if dhan_configured?
 
         # Otherwise, create a bridge handler that returns mocks
@@ -81,17 +81,17 @@ module Vyapari
         defined?(DhanHQ::Models::Funds) || defined?(DhanHQ::Models::Position) || defined?(DhanHQ::Models::Instrument)
       end
 
-      # Get handler from DhanComplete (which uses DhanHQ::Models directly)
+      # Get handler from DhanTools (which uses DhanHQ::Models directly)
       # @param tool_name [String] Tool name
       # @return [Proc, nil] Handler or nil if not found
       def self.get_dhan_complete_handler(tool_name)
-        return nil unless defined?(Ollama::Agent::Tools::DhanComplete)
+        return nil unless defined?(Ollama::Agent::Tools::DhanTools)
 
-        # Create a temporary registry to get the handler from DhanComplete
+        # Create a temporary registry to get the handler from DhanTools
         temp_registry = Ollama::Agent::ToolRegistry.new
-        Ollama::Agent::Tools::DhanComplete.register_all(
+        Ollama::Agent::Tools::DhanTools.register_all(
           registry: temp_registry,
-          dhan_client: nil # DhanComplete uses DhanHQ::Models directly
+          dhan_client: nil # DhanTools uses DhanHQ::Models directly
         )
 
         # Get the handler from the registry
