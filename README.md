@@ -54,8 +54,8 @@ bundle install
 OLLAMA_URL=http://localhost:11434  # Optional, defaults to localhost:11434
 
 # DhanHQ API Configuration
-DHAN_CLIENT_ID=your_client_id
-DHAN_ACCESS_TOKEN=your_access_token
+CLIENT_ID=your_client_id
+ACCESS_TOKEN=your_access_token
 DHAN_LOG_LEVEL=INFO  # Optional, defaults to INFO
 ```
 
@@ -550,8 +550,8 @@ agent = Vyapari::Options::Agent.new(client: client)
 ### DhanHQ Configuration
 
 DhanHQ is configured via environment variables:
-- `DHAN_CLIENT_ID`: Your DhanHQ client ID
-- `DHAN_ACCESS_TOKEN`: Your DhanHQ access token
+- `CLIENT_ID`: Your DhanHQ client ID
+- `ACCESS_TOKEN`: Your DhanHQ access token
 - `DHAN_LOG_LEVEL`: Logging level (default: INFO)
 
 Configure programmatically:

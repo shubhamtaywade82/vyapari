@@ -6,6 +6,7 @@
 require_relative "enhanced_dhan_tools"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/tool_descriptor"
+require_relative "../../ollama/agent/tools/dhan_complete"
 
 module Vyapari
   module Tools
@@ -63,14 +64,39 @@ module Vyapari
       # @param dhan_client [Object, nil] DhanHQ client
       # @return [Proc] Tool handler
       def self.get_handler_for_tool(tool_name, dhan_client)
-        # Try to get handler from DhanComplete if available
-        if defined?(Ollama::Agent::Tools::DhanComplete)
-          # This would require exposing handlers from DhanComplete
-          # For now, create a bridge handler
-          create_bridge_handler(tool_name, dhan_client)
-        else
-          create_bridge_handler(tool_name, dhan_client)
-        end
+        # If DhanHQ::Models is available, use DhanComplete handlers (they use Models directly)
+        return get_dhan_complete_handler(tool_name) if dhan_configured?
+
+        # Otherwise, create a bridge handler that returns mocks
+        create_bridge_handler(tool_name, dhan_client)
+      end
+
+      # Check if DhanHQ is configured (Models are accessible)
+      # @return [Boolean]
+      def self.dhan_configured?
+        return false unless defined?(DhanHQ)
+        return false unless defined?(DhanHQ::Models)
+
+        # Check if we can access a known model class
+        defined?(DhanHQ::Models::Funds) || defined?(DhanHQ::Models::Position) || defined?(DhanHQ::Models::Instrument)
+      end
+
+      # Get handler from DhanComplete (which uses DhanHQ::Models directly)
+      # @param tool_name [String] Tool name
+      # @return [Proc, nil] Handler or nil if not found
+      def self.get_dhan_complete_handler(tool_name)
+        return nil unless defined?(Ollama::Agent::Tools::DhanComplete)
+
+        # Create a temporary registry to get the handler from DhanComplete
+        temp_registry = Ollama::Agent::ToolRegistry.new
+        Ollama::Agent::Tools::DhanComplete.register_all(
+          registry: temp_registry,
+          dhan_client: nil # DhanComplete uses DhanHQ::Models directly
+        )
+
+        # Get the handler from the registry
+        tool_entry = temp_registry.instance_variable_get(:@tools)[tool_name]
+        tool_entry&.dig(:handler)
       end
 
       # Create a bridge handler that can call DhanHQ or return mock data
