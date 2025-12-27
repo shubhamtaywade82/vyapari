@@ -282,9 +282,9 @@ module Vyapari
             type: "object",
             properties: {
               underlying_scrip: {
-                type: "string",
-                examples: %w[13 NIFTY],
-                description: "Underlying symbol or security_id"
+                type: "integer",
+                examples: [13],
+                description: "Underlying security_id (integer, e.g., 13 for NIFTY). Must be an integer."
               },
               underlying_seg: {
                 type: "string",
@@ -296,10 +296,10 @@ module Vyapari
                 type: "string",
                 format: "date",
                 examples: ["2025-01-30"],
-                description: "Expiry date in YYYY-MM-DD format"
+                description: "Expiry date (YYYY-MM-DD format). Optional - if not provided, will be automatically resolved from expiry list using nearest expiry >= today."
               }
             },
-            required: %w[underlying_scrip underlying_seg expiry]
+            required: %w[underlying_scrip underlying_seg]
           },
 
           outputs: {
@@ -376,8 +376,16 @@ module Vyapari
           inputs: {
             type: "object",
             properties: {
-              underlying_scrip: { type: "string", examples: %w[13 NIFTY] },
-              underlying_seg: { type: "string", enum: ["IDX_I"] }
+              underlying_scrip: {
+                type: "integer",
+                examples: [13],
+                description: "Underlying security_id (integer, e.g., 13 for NIFTY). Must be an integer."
+              },
+              underlying_seg: { type: "string", enum: ["IDX_I"] },
+              expiry: {
+                type: "string",
+                description: "Any valid expiry date (YYYY-MM-DD format). Required by API but can be any date."
+              }
             },
             required: %w[underlying_scrip underlying_seg]
           },

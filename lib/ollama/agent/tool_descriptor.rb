@@ -80,7 +80,18 @@ module Ollama
       def normalize_schema(schema)
         case schema
         when Hash
-          schema.transform_keys(&:to_s)
+          normalized = schema.transform_keys(&:to_s)
+          # Recursively normalize nested properties
+          if normalized["properties"] && normalized["properties"].is_a?(Hash)
+            normalized["properties"] = normalized["properties"].transform_keys(&:to_s).transform_values do |prop_schema|
+              if prop_schema.is_a?(Hash)
+                prop_schema.transform_keys(&:to_s)
+              else
+                prop_schema
+              end
+            end
+          end
+          normalized
         else
           { "type" => "object", "properties" => {} }
         end
@@ -96,24 +107,32 @@ module Ollama
         # Type validation
         expected_type = schema["type"] || schema[:type]
         if expected_type
-          type_ok = case expected_type
-                    when "string"
-                      value.is_a?(String)
-                    when "integer"
-                      value.is_a?(Integer)
-                    when "number"
-                      value.is_a?(Numeric)
-                    when "boolean"
-                      value.is_a?(TrueClass) || value.is_a?(FalseClass)
-                    when "object"
-                      value.is_a?(Hash)
-                    when "array"
-                      value.is_a?(Array)
-                    else
-                      true # Unknown type, skip validation
-                    end
+          # Handle array of types (e.g., ["string", "integer"])
+          types_to_check = expected_type.is_a?(Array) ? expected_type : [expected_type]
 
-          errors << "#{field_name}: expected #{expected_type}, got #{value.class}" unless type_ok
+          type_ok = types_to_check.any? do |type|
+            case type
+            when "string"
+              value.is_a?(String)
+            when "integer"
+              value.is_a?(Integer)
+            when "number"
+              value.is_a?(Numeric)
+            when "boolean"
+              value.is_a?(TrueClass) || value.is_a?(FalseClass)
+            when "object"
+              value.is_a?(Hash)
+            when "array"
+              value.is_a?(Array)
+            else
+              true # Unknown type, skip validation
+            end
+          end
+
+          unless type_ok
+            type_str = expected_type.is_a?(Array) ? expected_type.join(" or ") : expected_type
+            errors << "#{field_name}: expected #{type_str}, got #{value.class}"
+          end
         end
 
         # Enum validation

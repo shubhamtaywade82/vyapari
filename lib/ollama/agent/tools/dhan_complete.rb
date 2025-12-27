@@ -61,7 +61,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 inst = DhanHQ::Models::Instrument.find(
                   args[:exchange_segment] || args["exchange_segment"],
@@ -101,7 +101,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 # Try MarketFeed.ltp if available
                 if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:ltp)
@@ -119,21 +119,24 @@ module Ollama
                   data = result[:data] || result["data"]
 
                   unless data
-                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data in response: #{result.inspect[0..200]}" }
+                    return { ltp: 0, timestamp: Time.now.iso8601,
+                             error: "No data in response: #{result.inspect[0..200]}" }
                   end
 
                   # Try both symbol and string keys for exchange_segment
                   segment_data = data[exchange_seg] || data[exchange_seg.to_sym]
 
                   unless segment_data
-                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data for exchange_segment #{exchange_seg}: #{data.keys.inspect}" }
+                    return { ltp: 0, timestamp: Time.now.iso8601,
+                             error: "No data for exchange_segment #{exchange_seg}: #{data.keys.inspect}" }
                   end
 
                   # Try both string and integer keys for security_id
                   security_data = segment_data[sec_id] || segment_data[sec_id.to_s] || segment_data[sec_id.to_i] || segment_data[sec_id.to_i.to_s]
 
                   unless security_data
-                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data for security_id #{sec_id}: #{segment_data.keys.inspect}" }
+                    return { ltp: 0, timestamp: Time.now.iso8601,
+                             error: "No data for security_id #{sec_id}: #{segment_data.keys.inspect}" }
                   end
 
                   ltp_value = security_data[:last_price] || security_data["last_price"]
@@ -141,7 +144,8 @@ module Ollama
                   if ltp_value && ltp_value > 0
                     { ltp: ltp_value.to_f, timestamp: Time.now.iso8601 }
                   else
-                    { ltp: 0, timestamp: Time.now.iso8601, error: "last_price not found or invalid: #{security_data.inspect}" }
+                    { ltp: 0, timestamp: Time.now.iso8601,
+                      error: "last_price not found or invalid: #{security_data.inspect}" }
                   end
                 else
                   { ltp: 0, timestamp: Time.now.iso8601, error: "LTP method not available" }
@@ -182,7 +186,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:quote)
                   DhanHQ::Models::MarketFeed.quote(
@@ -227,7 +231,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:ohlc)
                   DhanHQ::Models::MarketFeed.ohlc(
@@ -297,7 +301,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 raw_data = DhanHQ::Models::HistoricalData.intraday(
                   security_id: args[:security_id] || args["security_id"],
@@ -353,7 +357,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
                 if DhanHQ::Models::HistoricalData.respond_to?(:daily)
                   raw_data = DhanHQ::Models::HistoricalData.daily(
@@ -386,8 +390,8 @@ module Ollama
                 type: "object",
                 properties: {
                   underlying_scrip: {
-                    type: "string",
-                    description: "Underlying symbol (e.g., 'NIFTY', 'BANKNIFTY')"
+                    type: "integer",
+                    description: "Underlying security_id (integer, e.g., 13 for NIFTY). Must be an integer."
                   },
                   underlying_seg: {
                     type: "string",
@@ -395,10 +399,10 @@ module Ollama
                   },
                   expiry: {
                     type: "string",
-                    description: "Expiry date (YYYY-MM-DD format)"
+                    description: "Expiry date (YYYY-MM-DD format). Optional - if not provided, will be automatically resolved from expiry list using nearest expiry >= today."
                   }
                 },
-                required: %w[underlying_scrip underlying_seg expiry]
+                required: %w[underlying_scrip underlying_seg]
               },
               outputs: {
                 type: "object",
@@ -413,16 +417,263 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
-                if defined?(DhanHQ::Models::OptionChain)
-                  DhanHQ::Models::OptionChain.fetch(
-                    underlying_scrip: args[:underlying_scrip] || args["underlying_scrip"],
+                if defined?(DhanHQ::Models::OptionChain) && DhanHQ::Models::OptionChain.respond_to?(:fetch)
+                  # Convert underlying_scrip to integer (API requires integer, not string)
+                  underlying_scrip = args[:underlying_scrip] || args["underlying_scrip"]
+                  underlying_scrip = underlying_scrip.to_i if underlying_scrip.respond_to?(:to_i)
+
+                  # Validate expiry is provided
+                  expiry = args[:expiry] || args["expiry"]
+                  unless expiry && !expiry.to_s.empty?
+                    return {
+                      error: "Expiry is required. The tool query handler should have resolved this automatically. Please check expiry resolution logic.", contracts: [], spot_price: 0
+                    }
+                  end
+
+                  result = DhanHQ::Models::OptionChain.fetch(
+                    underlying_scrip: underlying_scrip,
                     underlying_seg: args[:underlying_seg] || args["underlying_seg"],
                     expiry: args[:expiry] || args["expiry"]
                   )
+
+                  # Transform response to match expected format
+                  # API returns: { :last_price => Float, :oc => { "strike" => { "ce" => {...}, "pe" => {...} } } }
+                  # Expected: { contracts: [...], spot_price: Float }
+                  if result.is_a?(Hash) && result[:oc]
+                    contracts = []
+                    spot_price = result[:last_price] || result["last_price"] || 0
+
+                    result[:oc].each do |strike_str, strike_data|
+                      strike = strike_str.to_f
+
+                      # Add CE contract if present and tradable
+                      if strike_data["ce"] || strike_data[:ce]
+                        ce = strike_data["ce"] || strike_data[:ce]
+                        ce_ltp = ce[:last_price] || ce["last_price"] || 0
+                        ce_bid = ce[:top_bid_price] || ce["top_bid_price"] || 0
+                        ce_ask = ce[:top_ask_price] || ce["top_ask_price"] || 0
+                        ce_oi = ce[:oi] || ce["oi"] || 0
+
+                        # Filter: Only include contracts with liquidity (LTP > 0 OR bid/ask > 0) AND reasonable OI
+                        if (ce_ltp > 0 || ce_bid > 0 || ce_ask > 0) && ce_oi > 0
+                          contracts << {
+                            security_id: ce[:security_id] || ce["security_id"],
+                            strike: strike,
+                            type: "CE",
+                            ltp: ce_ltp,
+                            bid: ce_bid,
+                            ask: ce_ask,
+                            open_interest: ce_oi,
+                            delta: ce.dig(:greeks, :delta) || ce.dig("greeks", "delta") || 0,
+                            gamma: ce.dig(:greeks, :gamma) || ce.dig("greeks", "gamma") || 0,
+                            theta: ce.dig(:greeks, :theta) || ce.dig("greeks", "theta") || 0,
+                            vega: ce.dig(:greeks, :vega) || ce.dig("greeks", "vega") || 0,
+                            volume: ce[:volume] || ce["volume"] || 0,
+                            implied_volatility: ce[:implied_volatility] || ce["implied_volatility"] || 0
+                          }
+                        end
+                      end
+
+                      # Add PE contract if present and tradable
+                      next unless strike_data["pe"] || strike_data[:pe]
+
+                      pe = strike_data["pe"] || strike_data[:pe]
+                      pe_ltp = pe[:last_price] || pe["last_price"] || 0
+                      pe_bid = pe[:top_bid_price] || pe["top_bid_price"] || 0
+                      pe_ask = pe[:top_ask_price] || pe["top_ask_price"] || 0
+                      pe_oi = pe[:oi] || pe["oi"] || 0
+
+                      # Filter: Only include contracts with liquidity (LTP > 0 OR bid/ask > 0) AND reasonable OI
+                      next unless (pe_ltp > 0 || pe_bid > 0 || pe_ask > 0) && pe_oi > 0
+
+                      contracts << {
+                        security_id: pe[:security_id] || pe["security_id"],
+                        strike: strike,
+                        type: "PE",
+                        ltp: pe_ltp,
+                        bid: pe_bid,
+                        ask: pe_ask,
+                        open_interest: pe_oi,
+                        delta: pe.dig(:greeks, :delta) || pe.dig("greeks", "delta") || 0,
+                        gamma: pe.dig(:greeks, :gamma) || pe.dig("greeks", "gamma") || 0,
+                        theta: pe.dig(:greeks, :theta) || pe.dig("greeks", "theta") || 0,
+                        vega: pe.dig(:greeks, :vega) || pe.dig("greeks", "vega") || 0,
+                        volume: pe[:volume] || pe["volume"] || 0,
+                        implied_volatility: pe[:implied_volatility] || pe["implied_volatility"] || 0
+                      }
+                    end
+
+                    # Filter and rank for option buying
+                    if spot_price > 0
+                      # Calculate quality score for each contract (higher = better for buying)
+                      contracts.each do |contract|
+                        strike = contract[:strike]
+                        ltp = contract[:ltp] || 0
+                        bid = contract[:bid] || 0
+                        ask = contract[:ask] || 0
+                        oi = contract[:open_interest] || 0
+                        volume = contract[:volume] || 0
+
+                        # Calculate metrics
+                        spread = ask > 0 && bid > 0 ? (ask - bid) / ask : Float::INFINITY
+                        spread_pct = ltp > 0 ? spread * 100 : Float::INFINITY
+                        distance_from_atm = (strike - spot_price).abs
+                        distance_pct = (distance_from_atm / spot_price) * 100
+
+                        # Quality score for option buying (higher = better)
+                        # Factors: Near ATM, High OI, High Volume, Low Spread, Has LTP
+                        quality_score = 0
+                        quality_score += 100 - distance_pct if distance_pct <= 20 # Prefer ATM (±20%)
+                        quality_score += [oi / 1000.0, 50].min # OI bonus (capped at 50)
+                        quality_score += [volume / 100.0, 30].min # Volume bonus (capped at 30)
+                        quality_score += 20 if ltp > 0 # Has LTP
+                        quality_score -= spread_pct * 2 if spread_pct < 5 # Penalize wide spreads
+                        quality_score += 10 if spread_pct < 1 # Bonus for tight spreads
+
+                        contract[:quality_score] = quality_score
+                        contract[:distance_from_atm] = distance_from_atm
+                        contract[:distance_pct] = distance_pct
+                        contract[:spread_pct] = spread_pct
+                      end
+
+                      # Sort by quality score (descending) - best contracts first
+                      contracts.sort_by! { |c| -c[:quality_score] }
+
+                      # Take top contracts: ATM focus (±10% of spot) with best quality
+                      atm_range = (spot_price * 0.9)..(spot_price * 1.1)
+                      atm_contracts = contracts.select { |c| atm_range.include?(c[:strike]) }
+
+                      contracts = if atm_contracts.any?
+                                    # Take top 20 ATM contracts
+                                    atm_contracts.first(20)
+                                  else
+                                    # If no ATM contracts, take top 30 by quality
+                                    contracts.first(30)
+                                  end
+                    else
+                      # No spot price - sort by OI + Volume, take top 30
+                      contracts.sort_by! { |c| -((c[:open_interest] || 0) + (c[:volume] || 0)) }
+                      contracts = contracts.first(30)
+                    end
+
+                    { contracts: contracts, spot_price: spot_price, total_filtered: contracts.length }
+                  elsif result.is_a?(Hash) && result["oc"]
+                    # Handle string keys - apply same filtering logic
+                    contracts = []
+                    spot_price = result[:last_price] || result["last_price"] || 0
+
+                    result["oc"].each do |strike_str, strike_data|
+                      strike = strike_str.to_f
+
+                      # Add CE contract if tradable
+                      if strike_data["ce"] || strike_data[:ce]
+                        ce = strike_data["ce"] || strike_data[:ce]
+                        ce_ltp = ce[:last_price] || ce["last_price"] || 0
+                        ce_bid = ce[:top_bid_price] || ce["top_bid_price"] || 0
+                        ce_ask = ce[:top_ask_price] || ce["top_ask_price"] || 0
+                        ce_oi = ce[:oi] || ce["oi"] || 0
+
+                        if (ce_ltp > 0 || ce_bid > 0 || ce_ask > 0) && ce_oi > 0
+                          contracts << {
+                            security_id: ce[:security_id] || ce["security_id"],
+                            strike: strike,
+                            type: "CE",
+                            ltp: ce_ltp,
+                            bid: ce_bid,
+                            ask: ce_ask,
+                            open_interest: ce_oi,
+                            delta: ce.dig(:greeks, :delta) || ce.dig("greeks", "delta") || 0,
+                            gamma: ce.dig(:greeks, :gamma) || ce.dig("greeks", "gamma") || 0,
+                            theta: ce.dig(:greeks, :theta) || ce.dig("greeks", "theta") || 0,
+                            vega: ce.dig(:greeks, :vega) || ce.dig("greeks", "vega") || 0,
+                            volume: ce[:volume] || ce["volume"] || 0,
+                            implied_volatility: ce[:implied_volatility] || ce["implied_volatility"] || 0
+                          }
+                        end
+                      end
+
+                      # Add PE contract if tradable
+                      next unless strike_data["pe"] || strike_data[:pe]
+
+                      pe = strike_data["pe"] || strike_data[:pe]
+                      pe_ltp = pe[:last_price] || pe["last_price"] || 0
+                      pe_bid = pe[:top_bid_price] || pe["top_bid_price"] || 0
+                      pe_ask = pe[:top_ask_price] || pe["top_ask_price"] || 0
+                      pe_oi = pe[:oi] || pe["oi"] || 0
+
+                      next unless (pe_ltp > 0 || pe_bid > 0 || pe_ask > 0) && pe_oi > 0
+
+                      contracts << {
+                        security_id: pe[:security_id] || pe["security_id"],
+                        strike: strike,
+                        type: "PE",
+                        ltp: pe_ltp,
+                        bid: pe_bid,
+                        ask: pe_ask,
+                        open_interest: pe_oi,
+                        delta: pe.dig(:greeks, :delta) || pe.dig("greeks", "delta") || 0,
+                        gamma: pe.dig(:greeks, :gamma) || pe.dig("greeks", "gamma") || 0,
+                        theta: pe.dig(:greeks, :theta) || pe.dig("greeks", "theta") || 0,
+                        vega: pe.dig(:greeks, :vega) || pe.dig("greeks", "vega") || 0,
+                        volume: pe[:volume] || pe["volume"] || 0,
+                        implied_volatility: pe[:implied_volatility] || pe["implied_volatility"] || 0
+                      }
+                    end
+
+                    # Filter and rank for option buying (same logic as above)
+                    if spot_price > 0
+                      # Calculate quality score for each contract
+                      contracts.each do |contract|
+                        strike = contract[:strike]
+                        ltp = contract[:ltp] || 0
+                        bid = contract[:bid] || 0
+                        ask = contract[:ask] || 0
+                        oi = contract[:open_interest] || 0
+                        volume = contract[:volume] || 0
+
+                        spread = ask > 0 && bid > 0 ? (ask - bid) / ask : Float::INFINITY
+                        spread_pct = ltp > 0 ? spread * 100 : Float::INFINITY
+                        distance_from_atm = (strike - spot_price).abs
+                        distance_pct = (distance_from_atm / spot_price) * 100
+
+                        quality_score = 0
+                        quality_score += 100 - distance_pct if distance_pct <= 20
+                        quality_score += [oi / 1000.0, 50].min
+                        quality_score += [volume / 100.0, 30].min
+                        quality_score += 20 if ltp > 0
+                        quality_score -= spread_pct * 2 if spread_pct < 5
+                        quality_score += 10 if spread_pct < 1
+
+                        contract[:quality_score] = quality_score
+                        contract[:distance_from_atm] = distance_from_atm
+                        contract[:distance_pct] = distance_pct
+                        contract[:spread_pct] = spread_pct
+                      end
+
+                      contracts.sort_by! { |c| -c[:quality_score] }
+
+                      atm_range = (spot_price * 0.9)..(spot_price * 1.1)
+                      atm_contracts = contracts.select { |c| atm_range.include?(c[:strike]) }
+
+                      contracts = if atm_contracts.any?
+                                    atm_contracts.first(20)
+                                  else
+                                    contracts.first(30)
+                                  end
+                    else
+                      contracts.sort_by! { |c| -((c[:open_interest] || 0) + (c[:volume] || 0)) }
+                      contracts = contracts.first(30)
+                    end
+
+                    { contracts: contracts, spot_price: spot_price, total_filtered: contracts.length }
+                  else
+                    # Return as-is if already in expected format or error
+                    result
+                  end
                 else
-                  { error: "OptionChain not available", contracts: [], spot_price: 0 }
+                  { error: "OptionChain.fetch not available", contracts: [], spot_price: 0 }
                 end
               rescue StandardError => e
                 { error: e.message, contracts: [], spot_price: 0 }
@@ -442,8 +693,18 @@ module Ollama
               inputs: {
                 type: "object",
                 properties: {
-                  underlying_scrip: { type: "string" },
-                  underlying_seg: { type: "string" }
+                  underlying_scrip: {
+                    type: "integer",
+                    description: "Underlying security_id (integer, e.g., 13 for NIFTY). Must be an integer."
+                  },
+                  underlying_seg: {
+                    type: "string",
+                    description: "Underlying segment (e.g., 'IDX_I' for indices)"
+                  },
+                  expiry: {
+                    type: "string",
+                    description: "Any valid expiry date (YYYY-MM-DD format). Required by API but can be any date - used only to fetch the expiry list."
+                  }
                 },
                 required: %w[underlying_scrip underlying_seg]
               },
@@ -457,15 +718,37 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               begin
-                if defined?(DhanHQ::Models::OptionChain) && DhanHQ::Models::OptionChain.respond_to?(:expiries)
-                  DhanHQ::Models::OptionChain.expiries(
-                    underlying_scrip: args[:underlying_scrip] || args["underlying_scrip"],
-                    underlying_seg: args[:underlying_seg] || args["underlying_seg"]
+                if defined?(DhanHQ::Models::OptionChain) && DhanHQ::Models::OptionChain.respond_to?(:fetch_expiry_list)
+                  # Convert underlying_scrip to integer if needed
+                  underlying_scrip = args[:underlying_scrip] || args["underlying_scrip"]
+                  underlying_scrip = underlying_scrip.to_i if underlying_scrip.respond_to?(:to_i)
+
+                  # fetch_expiry_list requires expiry parameter (can use any valid expiry)
+                  # We'll use today's date or a default expiry
+                  expiry = args[:expiry] || args["expiry"] || Date.today.strftime("%Y-%m-%d")
+
+                  result = DhanHQ::Models::OptionChain.fetch_expiry_list(
+                    underlying_scrip: underlying_scrip,
+                    underlying_seg: args[:underlying_seg] || args["underlying_seg"],
+                    expiry: expiry
                   )
+
+                  # Return as array format expected by tool
+                  if result.is_a?(Array)
+                    result
+                  elsif result.is_a?(Hash) && (result[:expiries] || result["expiries"])
+                    result[:expiries] || result["expiries"]
+                  elsif result.is_a?(Hash) && result[:data] && result[:data].is_a?(Array)
+                    result[:data]
+                  elsif result.is_a?(Hash) && result["data"] && result["data"].is_a?(Array)
+                    result["data"]
+                  else
+                    []
+                  end
                 else
-                  { error: "Expiries method not available", expiries: [] }
+                  { error: "fetch_expiry_list method not available", expiries: [] }
                 end
               rescue StandardError => e
                 { error: e.message, expiries: [] }
@@ -504,7 +787,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(_args) {
+            handler: lambda { |_args|
               begin
                 if defined?(DhanHQ::Models::Funds) && DhanHQ::Models::Funds.respond_to?(:balance)
                   DhanHQ::Models::Funds.balance
@@ -547,7 +830,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(_args) {
+            handler: lambda { |_args|
               begin
                 if defined?(DhanHQ::Models::Position) && DhanHQ::Models::Position.respond_to?(:list)
                   DhanHQ::Models::Position.list
@@ -588,7 +871,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(_args) {
+            handler: lambda { |_args|
               begin
                 if defined?(DhanHQ::Models::Holding) && DhanHQ::Models::Holding.respond_to?(:list)
                   DhanHQ::Models::Holding.list
@@ -630,7 +913,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(_args) {
+            handler: lambda { |_args|
               begin
                 if defined?(DhanHQ::Models::Order) && DhanHQ::Models::Order.respond_to?(:list)
                   DhanHQ::Models::Order.list
@@ -673,7 +956,7 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(_args) {
+            handler: lambda { |_args|
               begin
                 if defined?(DhanHQ::Models::Trade) && DhanHQ::Models::Trade.respond_to?(:today)
                   DhanHQ::Models::Trade.today
@@ -741,7 +1024,7 @@ module Ollama
                 "Never place order during market closure"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: "SIMULATED_#{Time.now.to_i}",
@@ -799,7 +1082,7 @@ module Ollama
                 "Verify order status before modification"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: args[:order_id] || args["order_id"],
@@ -849,7 +1132,7 @@ module Ollama
                 "Verify order status before cancellation"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: args[:order_id] || args["order_id"],
@@ -903,7 +1186,7 @@ module Ollama
                 "Never exit more than position size"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: "SIMULATED_EXIT_#{Time.now.to_i}",
@@ -916,9 +1199,7 @@ module Ollama
                   positions = DhanHQ::Models::Position.list
                   position = positions.find { |p| p.security_id == (args[:security_id] || args["security_id"]) }
 
-                  unless position
-                    return { order_id: nil, status: "error", error: "Position not found" }
-                  end
+                  return { order_id: nil, status: "error", error: "Position not found" } unless position
 
                   # Determine opposite transaction type
                   opposite_type = position.transaction_type == "BUY" ? "SELL" : "BUY"
@@ -991,7 +1272,8 @@ module Ollama
                     description: "Trailing stop jump (optional)"
                   }
                 },
-                required: %w[transaction_type exchange_segment product_type order_type security_id quantity price stop_loss_price]
+                required: %w[transaction_type exchange_segment product_type order_type security_id quantity price
+                             stop_loss_price]
               },
               outputs: {
                 type: "object",
@@ -1006,7 +1288,7 @@ module Ollama
                 "Verify funds before placing"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: "SIMULATED_SUPER_#{Time.now.to_i}",
@@ -1070,7 +1352,7 @@ module Ollama
                 "Stop-loss adjustment must be safer (wider)"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: args[:order_id] || args["order_id"],
@@ -1125,7 +1407,7 @@ module Ollama
                 "Verify order status before cancellation"
               ]
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
                 {
                   order_id: args[:order_id] || args["order_id"],
@@ -1179,11 +1461,12 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if cache_store
-                cached = cache_store.get("ltp:#{args[:security_id] || args['security_id']}")
+                cached = cache_store.get("ltp:#{args[:security_id] || args["security_id"]}")
                 if cached
-                  { ltp: cached[:ltp] || cached["ltp"] || 0, timestamp: cached[:timestamp] || cached["timestamp"], cached: true }
+                  { ltp: cached[:ltp] || cached["ltp"] || 0, timestamp: cached[:timestamp] || cached["timestamp"],
+                    cached: true }
                 else
                   { ltp: 0, timestamp: Time.now.iso8601, cached: false, error: "Not in cache" }
                 end
@@ -1223,9 +1506,9 @@ module Ollama
               side_effects: [],
               safety_rules: []
             },
-            handler: ->(args) {
+            handler: lambda { |args|
               if cache_store
-                cached = cache_store.get("tick:#{args[:security_id] || args['security_id']}")
+                cached = cache_store.get("tick:#{args[:security_id] || args["security_id"]}")
                 if cached
                   {
                     ltp: cached[:ltp] || cached["ltp"] || 0,
@@ -1236,10 +1519,12 @@ module Ollama
                     cached: true
                   }
                 else
-                  { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false, error: "Not in cache" }
+                  { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false,
+                    error: "Not in cache" }
                 end
               else
-                { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false, error: "Cache store not configured" }
+                { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false,
+                  error: "Cache store not configured" }
               end
             }
           )
@@ -1275,4 +1560,3 @@ module Ollama
     end
   end
 end
-
