@@ -10,25 +10,56 @@ module Vyapari
     # Legacy pattern matching (kept for backward compatibility)
     # LLM-based routing is now the primary method
     TOOL_PATTERNS = {
-      /get\s+(\w+)\s+ltp/i => {
+      /get\s+(\w+)(?:\s+index)?\s+ltp/i => {
         tool: "dhan.market.ltp",
         extract_args: lambda { |match, query|
           symbol = match[1]
-          { symbol: symbol, exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ" }
+          # Check if query mentions "index" or if symbol is a known index
+          is_index = query.match?(/\bindex\b/i) || symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          { symbol: symbol, exchange_segment: is_index ? "IDX_I" : (symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ") }
         }
       },
-      /fetch\s+(\w+)\s+ltp/i => {
+      /fetch\s+(\w+)(?:\s+index)?\s+ltp/i => {
         tool: "dhan.market.ltp",
         extract_args: lambda { |match, query|
           symbol = match[1]
-          { symbol: symbol, exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ" }
+          # Check if query mentions "index" or if symbol is a known index
+          is_index = query.match?(/\bindex\b/i) || symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          { symbol: symbol, exchange_segment: is_index ? "IDX_I" : (symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ") }
         }
       },
-      /(\w+)\s+ltp/i => {
+      # Simple LTP pattern - only match if symbol is NOT a common word
+      /(\w+)(?:\s+index)?\s+ltp/i => {
         tool: "dhan.market.ltp",
         extract_args: lambda { |match, query|
           symbol = match[1]
-          { symbol: symbol, exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ" }
+          # Skip if symbol is a common word (not a stock/index symbol)
+          common_words = %w[current the is what show get fetch me price value]
+          return nil if common_words.include?(symbol.downcase)
+
+          # Check if query mentions "index" or if symbol is a known index
+          is_index = query.match?(/\bindex\b/i) || symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          { symbol: symbol, exchange_segment: is_index ? "IDX_I" : (symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ") }
+        }
+      },
+      # Price queries (natural language variations) - handle "index" keyword and possessive
+      # Pattern: "What is NIFTY's index current ltp?" or "What is NIFTY index price?"
+      /(?:what|show|get|fetch)\s+(?:is|the|me)?\s*(\w+)(?:\'s)?(?:\s+index)?\s*(?:current\s+)?(?:price|ltp|value)/i => {
+        tool: "dhan.market.ltp",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          # Check if query mentions "index" or if symbol is a known index
+          is_index = query.match?(/\bindex\b/i) || symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          { symbol: symbol, exchange_segment: is_index ? "IDX_I" : (symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ") }
+        }
+      },
+      /(\w+)(?:\'s)?(?:\s+index)?\s*(?:current\s+)?(?:price|ltp|value)/i => {
+        tool: "dhan.market.ltp",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          # Check if query mentions "index" or if symbol is a known index
+          is_index = query.match?(/\bindex\b/i) || symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          { symbol: symbol, exchange_segment: is_index ? "IDX_I" : (symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ") }
         }
       },
       /get\s+(\w+)\s+quote/i => {
@@ -76,7 +107,16 @@ module Vyapari
           }
         }
       },
+      # Account queries - multiple patterns for different wordings (FAST pattern matching)
       /get\s+funds|balance|margin/i => {
+        tool: "dhan.funds.balance",
+        extract_args: ->(match, query) { {} }
+      },
+      /(?:what|show|get|fetch)\s+(?:is|my|the)?\s*(?:account\s+)?(?:balance|funds|margin)/i => {
+        tool: "dhan.funds.balance",
+        extract_args: ->(match, query) { {} }
+      },
+      /(?:my|account)\s+(?:balance|funds|margin)/i => {
         tool: "dhan.funds.balance",
         extract_args: ->(match, query) { {} }
       },
@@ -84,7 +124,23 @@ module Vyapari
         tool: "dhan.positions.list",
         extract_args: ->(match, query) { {} }
       },
+      /(?:show|list|get|fetch)\s+(?:me|my)?\s*(?:positions?|position)/i => {
+        tool: "dhan.positions.list",
+        extract_args: ->(match, query) { {} }
+      },
+      /(?:my|current)\s+positions?/i => {
+        tool: "dhan.positions.list",
+        extract_args: ->(match, query) { {} }
+      },
       /get\s+orders/i => {
+        tool: "dhan.orders.list",
+        extract_args: ->(match, query) { {} }
+      },
+      /(?:show|list|get|fetch)\s+(?:me|my)?\s*(?:orders?|order)/i => {
+        tool: "dhan.orders.list",
+        extract_args: ->(match, query) { {} }
+      },
+      /(?:my|current)\s+orders?/i => {
         tool: "dhan.orders.list",
         extract_args: ->(match, query) { {} }
       },
@@ -224,7 +280,50 @@ module Vyapari
     end
 
     def self.handle(query)
+      # OPTIMIZATION: For simple queries (price, ltp, balance, positions, orders),
+      # use fast pattern matching first to avoid LLM overhead
+      simple_query_patterns = [
+        /\b(price|ltp|quote)\b/i,
+        /\b(balance|funds|margin)\b/i,
+        /\b(positions?|position)\b/i,
+        /\b(orders?|order)\b/i,
+        /\b(holdings?|holding)\b/i
+      ]
+
+      # If it's a simple query, try pattern matching first (faster)
+      if simple_query_patterns.any? { |pattern| query.match?(pattern) }
+        tool_info = find_tool_for_query(query)
+        if tool_info
+          # Extract arguments
+          args = tool_info[:extract_args].call(tool_info[:match], query)
+
+          # Resolve symbol to security_id if needed
+          args = resolve_symbol_to_security_id(args) if args[:symbol] && !args[:security_id]
+
+          # For option chain, resolve underlying_scrip to integer security_id
+          if tool_info[:tool] == "dhan.option.chain" && args[:symbol] && !args[:underlying_scrip].is_a?(Integer)
+            args = resolve_symbol_to_security_id_for_option_chain(args)
+          end
+
+          # For option chain, if expiry is missing or default, fetch nearest expiry first
+          args = resolve_expiry_for_option_chain(args) if tool_info[:tool] == "dhan.option.chain"
+
+          # For intraday historical, resolve symbol and set up dates
+          args = resolve_intraday_historical_args(args) if tool_info[:tool] == "dhan.history.intraday"
+
+          # Call the tool
+          result = call_tool(tool_info[:tool], args)
+
+          return {
+            tool: tool_info[:tool],
+            args: args,
+            result: result
+          }
+        end
+      end
+
       # PRIMARY: Try LLM-based routing (understands natural language)
+      # Only used for complex queries or when pattern matching fails
       llm_result = route_with_llm(query)
       return llm_result if llm_result && !llm_result[:error]
 
@@ -445,7 +544,19 @@ module Vyapari
     def self.find_tool_for_query(query)
       TOOL_PATTERNS.each do |pattern, tool_info|
         match = query.match(pattern)
-        return tool_info.merge(match: match) if match
+        if match
+          # For patterns with extract_args, check if it returns nil (filtered out)
+          if tool_info[:extract_args]
+            begin
+              args = tool_info[:extract_args].call(match, query)
+              next if args.nil? # Skip this match if extract_args returns nil
+            rescue StandardError
+              # If extract_args fails, skip this pattern
+              next
+            end
+          end
+          return tool_info.merge(match: match)
+        end
       end
       nil
     end
@@ -457,10 +568,18 @@ module Vyapari
         system = Options::CompleteIntegration.setup_system(dry_run: true)
         registry = system[:registry]
 
+        # Ensure correct exchange_segment for indices
+        # If symbol is NIFTY/BANKNIFTY/SENSEX, force IDX_I
+        symbol = args[:symbol] || args["symbol"]
+        if symbol && symbol.match?(/^(NIFTY|BANKNIFTY|SENSEX|NIFTY50|NIFTY\s+50)$/i)
+          args[:exchange_segment] = "IDX_I"
+          args["exchange_segment"] = "IDX_I"
+        end
+
         # Call instrument.find to get security_id
         find_result = registry.call("dhan.instrument.find", {
-                                      symbol: args[:symbol],
-                                      exchange_segment: args[:exchange_segment]
+                                      symbol: symbol,
+                                      exchange_segment: args[:exchange_segment] || args["exchange_segment"]
                                     })
 
         if find_result[:status] == "success" && find_result[:result]
