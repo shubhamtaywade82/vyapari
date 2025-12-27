@@ -6,7 +6,7 @@ module Vyapari
   module Options
     # Options trading agent - handles options buying workflow
     class Agent
-      MAX_STEPS = 15
+      MAX_STEPS = 50 # Safety limit to prevent infinite loops
 
       TOOL_PREREQUISITES = {
         "fetch_intraday_history" => [:instrument],
@@ -100,9 +100,17 @@ module Vyapari
         @messages << { role: "user", content: query }
         @logger.info "🚀 Starting options agent with query: #{query}"
 
-        MAX_STEPS.times do |step_num|
-          @step = step_num + 1
-          @logger.info "\n📊 Step #{@step}/#{MAX_STEPS}"
+        # Dynamic loop: continue until recommend_trade is called or max steps reached
+        @step = 0
+        while @step < MAX_STEPS
+          @step += 1
+          @logger.info "\n📊 Step #{@step} (max: #{MAX_STEPS})"
+
+          # Check if recommend_trade has been called - if so, we're done
+          if @tools_called.include?("recommend_trade")
+            @logger.info "✅ recommend_trade called - workflow complete"
+            break
+          end
 
           response = @client.chat(
             messages: @messages,
@@ -198,10 +206,16 @@ module Vyapari
               next
             end
 
-            # Only return if workflow is complete and no continuation intent
-            content_length = msg["content"].to_s.length
-            @logger.info "✅ Options agent completed. Final response length: #{content_length} chars"
-            return msg["content"]
+            # Only return if workflow is complete (recommend_trade called) and no continuation intent
+            if @tools_called.include?("recommend_trade")
+              content_length = msg["content"].to_s.length
+              @logger.info "✅ Options agent completed. Final response length: #{content_length} chars"
+              return msg["content"]
+            else
+              # Workflow not complete - continue loop
+              @logger.warn "⚠️  LLM provided text response but recommend_trade not called. Continuing..."
+              next
+            end
           end
 
           tool_calls = msg["tool_calls"]
@@ -353,7 +367,31 @@ module Vyapari
           @logger.info "     🔄 Waiting for LLM to decide next action..."
         end
 
-        raise "Options agent did not converge after #{MAX_STEPS} steps"
+        # Check if recommend_trade was called
+        unless @tools_called.include?("recommend_trade")
+          raise "Options agent did not complete workflow after #{@step} steps. recommend_trade was not called."
+        end
+
+        @logger.info "✅ Options agent completed successfully after #{@step} steps"
+        # Get the last tool result (recommend_trade)
+        last_tool_result = get_last_tool_result
+        if last_tool_result
+          begin
+            result_data = last_tool_result["content"]
+            parsed_result = result_data.is_a?(Hash) ? result_data : JSON.parse(result_data)
+            # Return formatted recommendation
+            format_recommendation(parsed_result)
+          rescue JSON::ParserError
+            # If parsing fails, return as string
+            result_data.to_s
+          end
+        else
+          # Fallback: return last message content
+          last_msg = @messages.reverse.find { |m| %w[assistant user].include?(m["role"]) }
+          return last_msg["content"] if last_msg && last_msg["content"]
+
+          "Options agent completed but no result available"
+        end
       end
 
       private
@@ -430,6 +468,44 @@ module Vyapari
         return "recommend_trade" unless @tools_called.include?("recommend_trade")
 
         next_tool || "recommend_trade"
+      end
+
+      def format_recommendation(result)
+        # Format the recommendation result for final output
+        if result.is_a?(Hash)
+          action = result["action"] || result[:action]
+
+          if action == "NO_TRADE"
+            reason = result["reason"] || result[:reason] || "No trade recommended"
+            failed_gates = result["failed_gates"] || result[:failed_gates] || []
+            expansion_score = result["expansion_score"] || result[:expansion_score]
+
+            message = "NO_TRADE: #{reason}"
+            message += "\nFailed gates: #{failed_gates.join(", ")}" if failed_gates.any?
+            message += "\nExpansion score: #{expansion_score}/100" if expansion_score
+
+            return message
+          else
+            # BUY recommendation
+            side = result["side"] || result[:side]
+            entry = result["entry_price"] || result[:entry_price]
+            stop_loss = result["stop_loss_price"] || result[:stop_loss_price]
+            target = result["target_price"] || result[:target_price]
+            quantity = result["quantity"] || result[:quantity]
+            lot_size = result["lot_size"] || result[:lot_size]
+            score = result["expansion_score"] || result[:expansion_score]
+            expected_premium = result["expected_premium"] || result[:expected_premium]
+
+            message = "BUY #{side} - Entry: ₹#{entry.round(2)}, SL: ₹#{stop_loss.round(2)}, Target: ₹#{target.round(2)}"
+            message += "\nQuantity: #{quantity} shares (#{lot_size} lots)"
+            message += "\nExpansion Score: #{score}/100" if score
+            message += "\nExpected Premium Move: ₹#{expected_premium.round(2)}" if expected_premium
+
+            return message
+          end
+        end
+
+        result.to_s
       end
 
       def get_last_tool_result
@@ -677,15 +753,25 @@ module Vyapari
           # Inject all from context - LLM params are ignored
           raise "Missing trend context" unless @context[:trend]
 
+          args = {
+            "trend" => @context[:trend]
+          }
+
+          # Add candles_5m and candles_15m for pre-trade gates
+          args["candles_5m"] = @context[:candles] if @context[:candles]
+          args["candles_15m"] = @context[:candles_15m] if @context[:candles_15m]
+
           # If trend is "avoid", option_chain is not required
           trend_value = @context[:trend].to_s.downcase
           if %w[avoid choppy].include?(trend_value)
-            { "trend" => @context[:trend], "options" => nil }
+            args["options"] = nil
           else
             raise "Missing option_chain context" unless @context[:option_chain]
 
-            { "trend" => @context[:trend], "options" => @context[:option_chain] }
+            args["options"] = @context[:option_chain]
           end
+
+          args
 
         else
           args
@@ -722,12 +808,13 @@ module Vyapari
         when "fetch_intraday_history"
           data = result.is_a?(Hash) ? result : JSON.parse(result)
           candles = data["candles"] || data[:candles] || data
-          # Store based on interval: "15" -> candles_15m, "5" -> candles
+          # Store based on interval: "15" -> candles_15m, "5" -> candles and candles_5m
           interval = resolved_args["interval"] || resolved_args[:interval] || "5"
           if interval.to_s == "15"
             @context[:candles_15m] = candles
           else
             @context[:candles] = candles
+            @context[:candles_5m] = candles # Also store as candles_5m for clarity
           end
 
         when "analyze_structure_15m"
