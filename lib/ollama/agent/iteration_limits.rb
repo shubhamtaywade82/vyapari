@@ -6,17 +6,22 @@ module Ollama
     # Based on: iteration = 1 LLM call + 0-1 tool execution
     module IterationLimits
       # Analysis agents - allow deep reasoning
-      ANALYSIS = 8
+      ANALYSIS = 8 # 5-8 range for market analysis
       PLANNING = 4
       RESEARCH = 6
 
       # Validation agents - quick checks
-      VALIDATION = 3
+      VALIDATION = 3 # 2-3 range for risk validation
       RISK_CHECK = 2
 
       # Execution agents - fast and bounded
       EXECUTION = 2
-      TRADING_EXECUTION = 2  # ≤3 for trading (safety)
+      TRADING_EXECUTION = 2 # 1-2 range, ≤3 for trading (safety)
+
+      # Global limit: One trade = max 12 LLM calls total
+      # (8 analysis + 3 validation + 2 execution = 13 theoretical max)
+      # But typical: 6-8 analysis + 2 validation + 1 execution = 9-11 calls
+      MAX_LLM_CALLS_PER_TRADE = 12
 
       # Monitoring agents - status checks
       MONITORING = 1
@@ -24,7 +29,7 @@ module Ollama
 
       # Debug/development agents - more lenient
       DEBUG = 10
-      CURSOR_LIKE = 20  # For file editing, not trading
+      CURSOR_LIKE = 20 # For file editing, not trading
 
       # Default limits by category
       DEFAULT_LIMITS = {
@@ -59,4 +64,3 @@ module Ollama
     end
   end
 end
-
