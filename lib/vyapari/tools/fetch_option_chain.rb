@@ -14,7 +14,7 @@ module Vyapari
           type: "function",
           function: {
             name: name,
-            description: "STEP 5: Fetches option chain data for index options. MUST be called after analyze_trend returns 'bullish' or 'bearish'. DO NOT call if trend is 'avoid'. ALL parameters (symbol, expiry, trend) are automatically injected from context - call with empty parameters: {}.",
+            description: "STEP 5: Fetches option chain data for options trading. MUST be called after analyze_trend. ALL parameters (symbol, expiry, trend) are automatically injected from context - call with empty parameters: {}.",
             parameters: {
               type: "object",
               properties: {},
@@ -30,15 +30,18 @@ module Vyapari
         trend = p["trend"] || p[:trend]
         expiry = p["expiry"] || p[:expiry]
 
-        raise ArgumentError, "symbol parameter is required and cannot be empty. Use the 'instrument' field from find_instrument result." if symbol.nil? || symbol.to_s.strip.empty?
-        raise ArgumentError, "trend parameter is required (must be 'bullish' or 'bearish')" if trend.nil? || trend.to_s.strip.empty?
+        if symbol.nil? || symbol.to_s.strip.empty?
+          raise ArgumentError,
+                "symbol parameter is required and cannot be empty. Use the 'instrument' field from find_instrument result."
+        end
+        raise ArgumentError, "trend parameter is required" if trend.nil? || trend.to_s.strip.empty?
 
         # Normalize trend
         trend = trend.to_s.downcase.strip
-        if trend == "avoid"
-          raise ArgumentError, "Cannot fetch option chain when trend is 'avoid'. Call recommend_trade with trend='avoid' instead to get NO_TRADE recommendation."
+        # Allow "avoid" trend - will default to CE side
+        unless %w[bullish bearish avoid choppy].include?(trend)
+          raise ArgumentError, "trend must be 'bullish', 'bearish', or 'avoid', got: #{trend}"
         end
-        raise ArgumentError, "trend must be 'bullish' or 'bearish', got: #{trend}" unless %w[bullish bearish].include?(trend)
 
         # Get underlying_seg and underlying_scrip from context (injected by agent)
         # For indices, always use IDX_I
@@ -50,6 +53,7 @@ module Vyapari
           symbol_str = symbol.to_s.upcase
           underlying = DhanHQ::Models::Instrument.find("IDX_I", symbol_str)
           raise "Underlying not found for symbol: #{symbol_str}" unless underlying
+
           underlying_seg = "IDX_I"
           underlying_scrip = underlying.security_id.to_i
         else
@@ -110,12 +114,15 @@ module Vyapari
         atm_index  = strikes.index(atm_strike)
 
         # 4️⃣ ATM+1
-        otm_strike =
-          if p["trend"] == "bullish"
-            strikes[atm_index + 1]
-          else
-            strikes[atm_index - 1]
-          end
+        # For "avoid" or "choppy" trend, default to bullish direction (ATM+1)
+        otm_strike = case trend
+                     when "bullish"
+                       strikes[atm_index + 1]
+                     when "bearish"
+                       strikes[atm_index - 1]
+                     else
+                       strikes[atm_index + 1] # Default to bullish direction for avoid/choppy
+                     end
 
         # 5️⃣ Side
         side = trend == "bullish" ? "ce" : "pe"

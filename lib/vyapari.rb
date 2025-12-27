@@ -1,11 +1,27 @@
 # frozen_string_literal: true
 
 require_relative "vyapari/version"
-require "dhan_hq"
+
+# Suppress warnings from DhanHQ gem about optional technical analysis dependencies
+original_verbosity = $VERBOSE
+$VERBOSE = nil
+begin
+  require "dhan_hq"
+ensure
+  $VERBOSE = original_verbosity
+end
 
 # Ensure modules exist before loading files
 module Vyapari
   module Tools
+    module Swing
+    end
+  end
+
+  module Options
+  end
+
+  module Swing
   end
 
   module Indicators
