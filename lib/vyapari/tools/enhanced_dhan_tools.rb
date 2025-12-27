@@ -48,17 +48,17 @@ module Vyapari
             properties: {
               exchange_segment: {
                 type: "string",
-                enum: ["NSE_EQ", "NSE_FNO", "IDX_I", "NFO"],
-                examples: ["NSE_FNO", "IDX_I"],
-                description: "Exchange segment code"
+                enum: %w[IDX_I NSE_EQ NSE_FNO NSE_CURRENCY BSE_EQ MCX_COMM BSE_CURRENCY BSE_FNO],
+                examples: %w[NSE_FNO IDX_I],
+                description: "Exchange segment code (IDX_I=Index, NSE_FNO=NSE F&O, NSE_EQ=NSE Equity, etc.)"
               },
               security_id: {
                 type: "string",
-                examples: ["13", "12345"],
+                examples: %w[13 12345],
                 description: "DhanHQ security ID"
               }
             },
-            required: ["exchange_segment", "security_id"]
+            required: %w[exchange_segment security_id]
           },
 
           outputs: {
@@ -66,7 +66,7 @@ module Vyapari
             properties: {
               ltp: {
                 type: "number",
-                examples: [102.5, 22450.0],
+                examples: [102.5, 22_450.0],
                 description: "Latest traded price"
               },
               timestamp: {
@@ -95,7 +95,7 @@ module Vyapari
               },
               {
                 input: {
-                  exchange_segment: "NFO",
+                  exchange_segment: "NSE_FNO",
                   security_id: "12345"
                 },
                 comment: "Fetch option contract LTP"
@@ -141,10 +141,12 @@ module Vyapari
           inputs: {
             type: "object",
             properties: {
-              exchange_segment: { type: "string", enum: ["NSE_EQ", "NSE_FNO", "IDX_I", "NFO"] },
+              exchange_segment: { type: "string",
+                                  enum: %w[IDX_I NSE_EQ NSE_FNO NSE_CURRENCY BSE_EQ MCX_COMM
+                                           BSE_CURRENCY BSE_FNO] },
               security_id: { type: "string" }
             },
-            required: ["exchange_segment", "security_id"]
+            required: %w[exchange_segment security_id]
           },
 
           outputs: {
@@ -165,7 +167,7 @@ module Vyapari
             valid: [
               {
                 input: {
-                  exchange_segment: "NFO",
+                  exchange_segment: "NSE_FNO",
                   security_id: "12345"
                 },
                 comment: "Get full quote for option contract"
@@ -199,22 +201,26 @@ module Vyapari
             properties: {
               exchange_segment: {
                 type: "string",
-                enum: ["NSE_EQ", "NSE_FNO", "IDX_I", "NFO"],
-                examples: ["IDX_I", "NSE_EQ"]
+                enum: %w[IDX_I NSE_EQ NSE_FNO NSE_CURRENCY BSE_EQ MCX_COMM BSE_CURRENCY BSE_FNO],
+                examples: %w[IDX_I NSE_EQ]
               },
               symbol: {
                 type: "string",
-                examples: ["NIFTY", "RELIANCE", "NIFTY25JAN22500CE"]
+                examples: %w[NIFTY RELIANCE NIFTY25JAN22500CE]
               }
             },
-            required: ["exchange_segment", "symbol"]
+            required: %w[exchange_segment symbol]
           },
 
           outputs: {
             type: "object",
             properties: {
-              security_id: { type: "string", examples: ["13", "12345"] },
-              instrument_type: { type: "string", examples: ["EQUITY", "INDEX", "OPTION"] },
+              security_id: { type: "string", examples: %w[13 12345] },
+              instrument_type: {
+                type: "string",
+                enum: %w[INDEX FUTIDX OPTIDX EQUITY FUTSTK OPTSTK FUTCOM OPTFUT FUTCUR OPTCUR],
+                examples: %w[INDEX OPTIDX EQUITY]
+              },
               symbol: { type: "string" },
               exchange_segment: { type: "string" }
             },
@@ -235,7 +241,7 @@ module Vyapari
               },
               {
                 input: {
-                  exchange_segment: "NFO",
+                  exchange_segment: "NSE_FNO",
                   symbol: "NIFTY25JAN22500CE"
                 },
                 comment: "Find option contract"
@@ -277,7 +283,7 @@ module Vyapari
             properties: {
               underlying_scrip: {
                 type: "string",
-                examples: ["13", "NIFTY"],
+                examples: %w[13 NIFTY],
                 description: "Underlying symbol or security_id"
               },
               underlying_seg: {
@@ -293,7 +299,7 @@ module Vyapari
                 description: "Expiry date in YYYY-MM-DD format"
               }
             },
-            required: ["underlying_scrip", "underlying_seg", "expiry"]
+            required: %w[underlying_scrip underlying_seg expiry]
           },
 
           outputs: {
@@ -305,11 +311,11 @@ module Vyapari
               },
               spot_price: {
                 type: "number",
-                examples: [22450.0],
+                examples: [22_450.0],
                 description: "Current underlying spot price"
               }
             },
-            required: ["contracts", "spot_price"]
+            required: %w[contracts spot_price]
           },
 
           side_effects: [],
@@ -370,10 +376,10 @@ module Vyapari
           inputs: {
             type: "object",
             properties: {
-              underlying_scrip: { type: "string", examples: ["13", "NIFTY"] },
+              underlying_scrip: { type: "string", examples: %w[13 NIFTY] },
               underlying_seg: { type: "string", enum: ["IDX_I"] }
             },
-            required: ["underlying_scrip", "underlying_seg"]
+            required: %w[underlying_scrip underlying_seg]
           },
 
           outputs: {
@@ -382,7 +388,7 @@ module Vyapari
               expiries: {
                 type: "array",
                 items: { type: "string", format: "date" },
-                examples: [["2025-01-30", "2025-02-06"]]
+                examples: [%w[2025-01-30 2025-02-06]]
               }
             },
             required: ["expiries"]
@@ -433,14 +439,14 @@ module Vyapari
               instrument: { type: "string" },
               interval: {
                 type: "string",
-                enum: ["1", "5", "15", "30", "60"],
-                examples: ["15", "5", "1"],
+                enum: %w[1 5 15 30 60],
+                examples: %w[15 5 1],
                 description: "Candle interval in minutes"
               },
               from_date: { type: "string", format: "date" },
               to_date: { type: "string", format: "date" }
             },
-            required: ["security_id", "exchange_segment", "instrument", "interval"]
+            required: %w[security_id exchange_segment instrument interval]
           },
 
           outputs: {
@@ -510,7 +516,7 @@ module Vyapari
               from_date: { type: "string", format: "date" },
               to_date: { type: "string", format: "date" }
             },
-            required: ["security_id", "exchange_segment", "instrument"]
+            required: %w[security_id exchange_segment instrument]
           },
 
           outputs: {
@@ -578,7 +584,7 @@ module Vyapari
           outputs: {
             type: "object",
             properties: {
-              available_margin: { type: "number", examples: [85000.0] },
+              available_margin: { type: "number", examples: [85_000.0] },
               utilized_margin: { type: "number" },
               total_margin: { type: "number" }
             },
@@ -736,10 +742,16 @@ module Vyapari
                 examples: ["NIFTY25JAN22500CE"],
                 description: "Option contract symbol"
               },
-              exchange: {
+              exchange_segment: {
                 type: "string",
-                enum: ["NFO"],
-                description: "Derivatives exchange"
+                enum: ["NSE_FNO"],
+                description: "Exchange segment (NSE_FNO for NSE Futures & Options)"
+              },
+              product_type: {
+                type: "string",
+                enum: %w[INTRADAY MARGIN],
+                examples: ["INTRADAY"],
+                description: "Product type (INTRADAY for intraday, MARGIN for carry forward)"
               },
               transaction_type: {
                 type: "string",
@@ -754,7 +766,7 @@ module Vyapari
               },
               order_type: {
                 type: "string",
-                enum: ["MARKET", "LIMIT"],
+                enum: %w[MARKET LIMIT],
                 description: "Order type"
               },
               price: {
@@ -764,7 +776,7 @@ module Vyapari
                 description: "Required only for LIMIT orders"
               }
             },
-            required: ["symbol", "exchange", "transaction_type", "quantity", "order_type"]
+            required: %w[symbol exchange_segment product_type transaction_type quantity order_type]
           },
 
           outputs: {
@@ -776,10 +788,11 @@ module Vyapari
               },
               status: {
                 type: "string",
-                enum: ["PENDING", "REJECTED", "TRANSIT", "EXECUTED"]
+                enum: %w[TRANSIT PENDING CLOSED TRIGGERED REJECTED CANCELLED PART_TRADED TRADED],
+                examples: %w[PENDING TRADED REJECTED]
               }
             },
-            required: ["order_id", "status"]
+            required: %w[order_id status]
           },
 
           side_effects: [
@@ -797,7 +810,8 @@ module Vyapari
 
           defaults: {
             order_type: "MARKET",
-            exchange: "NFO"
+            exchange_segment: "NSE_FNO",
+            product_type: "INTRADAY"
           },
 
           dry_run_behavior: {
@@ -813,7 +827,8 @@ module Vyapari
               {
                 input: {
                   symbol: "NIFTY25JAN22500CE",
-                  exchange: "NFO",
+                  exchange_segment: "NSE_FNO",
+                  product_type: "INTRADAY",
                   transaction_type: "BUY",
                   quantity: 150,
                   order_type: "MARKET"
@@ -823,7 +838,8 @@ module Vyapari
               {
                 input: {
                   symbol: "NIFTY25JAN22500CE",
-                  exchange: "NFO",
+                  exchange_segment: "NSE_FNO",
+                  product_type: "INTRADAY",
                   transaction_type: "BUY",
                   quantity: 75,
                   order_type: "LIMIT",
@@ -888,7 +904,13 @@ module Vyapari
               },
               exchange_segment: {
                 type: "string",
-                enum: ["NFO"]
+                enum: ["NSE_FNO"]
+              },
+              product_type: {
+                type: "string",
+                enum: %w[INTRADAY MARGIN],
+                examples: ["INTRADAY"],
+                description: "Product type (INTRADAY for intraday, MARGIN for carry forward)"
               },
               transaction_type: {
                 type: "string",
@@ -901,7 +923,7 @@ module Vyapari
               },
               order_type: {
                 type: "string",
-                enum: ["MARKET", "LIMIT"]
+                enum: %w[MARKET LIMIT]
               },
               price: {
                 type: "number",
@@ -918,7 +940,8 @@ module Vyapari
                 description: "Target price (MANDATORY)"
               }
             },
-            required: ["security_id", "exchange_segment", "transaction_type", "quantity", "order_type", "stop_loss", "target"]
+            required: %w[security_id exchange_segment product_type transaction_type quantity order_type stop_loss
+                         target]
           },
 
           outputs: {
@@ -927,7 +950,7 @@ module Vyapari
               order_id: { type: "string" },
               status: { type: "string" }
             },
-            required: ["order_id", "status"]
+            required: %w[order_id status]
           },
 
           side_effects: [
@@ -956,7 +979,8 @@ module Vyapari
               {
                 input: {
                   security_id: "12346",
-                  exchange_segment: "NFO",
+                  exchange_segment: "NSE_FNO",
+                  product_type: "INTRADAY",
                   transaction_type: "BUY",
                   quantity: 75,
                   order_type: "MARKET",
@@ -990,4 +1014,3 @@ module Vyapari
     end
   end
 end
-

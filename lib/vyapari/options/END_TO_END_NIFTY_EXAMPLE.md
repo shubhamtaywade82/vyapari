@@ -88,7 +88,8 @@ Task: "Analyze NIFTY options buying opportunity"
 **Tool Call:** `dhan.market.ltp`
 ```json
 {
-  "exchange_segment": "NFO",
+  "exchange_segment": "NSE_FNO",
+  "product_type": "INTRADAY",
   "security_id": "12346"
 }
 ```
@@ -326,7 +327,8 @@ lot_result = calculator.calculate_lot_size(
 ```json
 {
   "security_id": "12346",
-  "exchange_segment": "NFO",
+  "exchange_segment": "NSE_FNO",
+  "product_type": "INTRADAY",
   "transaction_type": "BUY",
   "quantity": 75,
   "order_type": "MARKET",

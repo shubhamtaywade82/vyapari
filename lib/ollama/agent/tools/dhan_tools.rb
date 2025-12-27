@@ -58,10 +58,15 @@ module Ollama
                     type: "string",
                     description: "Option symbol (e.g., 'NIFTY25JAN24500CE')"
                   },
-                  exchange: {
+                  exchange_segment: {
                     type: "string",
-                    enum: ["NFO"],
-                    description: "Exchange segment"
+                    enum: ["NSE_FNO"],
+                    description: "Exchange segment (NSE_FNO for NSE Futures & Options)"
+                  },
+                  product_type: {
+                    type: "string",
+                    enum: ["INTRADAY", "MARGIN"],
+                    description: "Product type (INTRADAY for intraday, MARGIN for carry forward)"
                   },
                   transaction_type: {
                     type: "string",
@@ -84,7 +89,7 @@ module Ollama
                     description: "Limit price (required for LIMIT orders)"
                   }
                 },
-                required: ["symbol", "exchange", "transaction_type", "quantity", "order_type"]
+                required: ["symbol", "exchange_segment", "product_type", "transaction_type", "quantity", "order_type"]
               },
               outputs: {
                 type: "object",
