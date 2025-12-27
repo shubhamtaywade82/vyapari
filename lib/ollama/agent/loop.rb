@@ -6,6 +6,7 @@ module Ollama
   class Agent
     # Bounded agent loop controller
     # Enforces iteration limits, timeouts, and token budgets
+    # IMPORTANT: 1 iteration = 1 LLM call + 0-1 tool execution
     class Loop
       DEFAULT_MAX_ITERATIONS = 3
       DEFAULT_TIMEOUT = 30 # seconds
@@ -24,6 +25,7 @@ module Ollama
       end
 
       # Run the agent loop until completion or limits reached
+      # IMPORTANT: Each iteration = 1 LLM call + 0-1 tool execution
       # @param task [String] Initial task
       # @param plan_schema [Hash] JSON schema for plans
       # @return [Hash] Final result with context and trace
@@ -34,6 +36,7 @@ module Ollama
         iteration = 0
         trace = []
 
+        # Hard limit: never exceed max_iterations
         while iteration < @max_iterations
           iteration += 1
 
