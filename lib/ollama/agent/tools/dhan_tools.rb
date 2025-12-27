@@ -2,6 +2,7 @@
 
 require_relative "../tool_registry"
 require "date"
+require "time"
 
 module Ollama
   class Agent
@@ -253,69 +254,233 @@ module Ollama
         # ============================================
 
         def self.register_historical_tools(registry, dhan_client)
-          # 5. Intraday OHLC
+          # 5. Intraday OHLC (Production-Grade with Trading Day Validation)
           registry.register(
             descriptor: {
               name: "dhan.history.intraday",
-              category: "historical",
-              description: "Fetches intraday OHLC bars for technical analysis",
-              when_to_use: "For strategy evaluation and signal generation",
-              when_not_to_use: "For live trailing or exits (use market data)",
+              category: "market.history",
+              description: "Fetch intraday OHLC candles for a given timeframe",
+              purpose: "Multi-timeframe analysis, regime detection, and setup validation",
+              when_to_use: [
+                "Multi-timeframe analysis in Agent A",
+                "Structure and momentum analysis",
+                "Regime detection and setup validation"
+              ],
+              when_not_to_use: [
+                "After analysis complete",
+                "Repeatedly for same timeframe in same iteration",
+                "For live trailing or exits (use market data)",
+                "During ORDER_EXECUTION or POSITION_TRACKING phases"
+              ],
               risk_level: :none,
               inputs: {
                 type: "object",
                 properties: {
-                  security_id: { type: "string" },
-                  exchange_segment: { type: "string" },
-                  instrument: { type: "string" },
+                  security_id: {
+                    type: "string",
+                    description: "Resolved security id from dhan.instrument.find"
+                  },
+                  exchange_segment: {
+                    type: "string",
+                    description: "Exchange segment of the instrument"
+                  },
+                  instrument: {
+                    type: "string",
+                    enum: %w[INDEX EQUITY FUT OPT],
+                    description: "Instrument type as required by Dhan API"
+                  },
                   interval: {
                     type: "string",
                     enum: %w[1 5 15 25 60],
-                    description: "Interval in minutes"
+                    description: "Candle interval in minutes"
                   },
                   from_date: {
                     type: "string",
-                    description: "Start date (YYYY-MM-DD)"
+                    format: "date",
+                    description: "Must be a trading day. In LIVE mode, must be the last trading day before to_date."
                   },
                   to_date: {
                     type: "string",
-                    description: "End date (YYYY-MM-DD)"
+                    format: "date",
+                    description: "In LIVE mode, must be today's date and a trading day."
                   }
                 },
                 required: %w[security_id exchange_segment instrument interval from_date to_date]
               },
               outputs: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    open: { type: "number" },
-                    high: { type: "number" },
-                    low: { type: "number" },
-                    close: { type: "number" },
-                    volume: { type: "number" },
-                    time: { type: "string" }
+                type: "object",
+                properties: {
+                  candles: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        ts: { type: "integer", description: "Epoch timestamp" },
+                        open: { type: "number" },
+                        high: { type: "number" },
+                        low: { type: "number" },
+                        close: { type: "number" }
+                      },
+                      required: %w[ts open high low close]
+                    }
+                  },
+                  interval: {
+                    type: "string",
+                    description: "Interval of returned candles"
+                  },
+                  complete: {
+                    type: "boolean",
+                    description: "True if the last candle is CLOSED and safe to use"
                   }
-                }
+                },
+                required: %w[candles interval complete]
               },
               side_effects: [],
-              safety_rules: []
+              safety_rules: [
+                "Never use last candle if complete=false",
+                "LIVE mode requires previous-session trading day context",
+                "from_date must never be a weekend or exchange holiday",
+                "Interval must match analysis_context interval",
+                "Do not mix multiple intervals in the same reasoning step",
+                "Do not call repeatedly in the same iteration"
+              ],
+              examples: {
+                valid: [
+                  {
+                    input: {
+                      security_id: "13",
+                      exchange_segment: "IDX_I",
+                      instrument: "INDEX",
+                      interval: "5",
+                      from_date: "2025-01-17",
+                      to_date: "2025-01-20"
+                    },
+                    comment: "LIVE intraday NIFTY analysis on Monday using last trading day (Friday)"
+                  },
+                  {
+                    input: {
+                      security_id: "13",
+                      exchange_segment: "IDX_I",
+                      instrument: "INDEX",
+                      interval: "15",
+                      from_date: "2024-12-02",
+                      to_date: "2024-12-31"
+                    },
+                    comment: "HISTORICAL intraday data for backtesting using trading days only"
+                  }
+                ],
+                invalid: [
+                  {
+                    input: {
+                      security_id: "13",
+                      exchange_segment: "IDX_I",
+                      instrument: "INDEX",
+                      interval: "5",
+                      from_date: "2025-01-19",
+                      to_date: "2025-01-20"
+                    },
+                    reason: "from_date is a Sunday and not a trading day"
+                  },
+                  {
+                    input: {
+                      security_id: "13",
+                      exchange_segment: "IDX_I",
+                      instrument: "INDEX",
+                      interval: "5",
+                      from_date: "2025-01-20",
+                      to_date: "2025-01-20"
+                    },
+                    reason: "LIVE mode cannot use same-day from_date and to_date"
+                  },
+                  {
+                    input: {
+                      interval: "2"
+                    },
+                    reason: "Interval not supported by Dhan"
+                  }
+                ]
+              }
             },
             handler: lambda { |args|
               begin
+                security_id = args[:security_id] || args["security_id"]
+                exchange_segment = args[:exchange_segment] || args["exchange_segment"]
+                instrument = args[:instrument] || args["instrument"]
+                interval = args[:interval] || args["interval"]
+                from_date = args[:from_date] || args["from_date"]
+                to_date = args[:to_date] || args["to_date"]
+
+                # Validate interval
+                unless %w[1 5 15 25 60].include?(interval)
+                  return {
+                    error: "Invalid interval: #{interval}. Must be one of: 1, 5, 15, 25, 60",
+                    candles: [],
+                    interval: interval,
+                    complete: false
+                  }
+                end
+
+                # Validate and parse dates
+                from_dt = Date.parse(from_date)
+                to_dt = Date.parse(to_date)
+
+                # Check if dates are valid trading days (basic check - weekends)
+                if from_dt.sunday? || from_dt.saturday?
+                  return {
+                    error: "from_date (#{from_date}) is a weekend and not a trading day",
+                    candles: [],
+                    interval: interval,
+                    complete: false
+                  }
+                end
+
+                if to_dt.sunday? || to_dt.saturday?
+                  return {
+                    error: "to_date (#{to_date}) is a weekend and not a trading day",
+                    candles: [],
+                    interval: interval,
+                    complete: false
+                  }
+                end
+
+                # Check LIVE mode constraint: from_date must be before to_date
+                if from_dt >= to_dt
+                  return {
+                    error: "LIVE mode constraint: from_date (#{from_date}) must be before to_date (#{to_date})",
+                    candles: [],
+                    interval: interval,
+                    complete: false
+                  }
+                end
+
+                # Fetch data from DhanHQ
                 raw_data = DhanHQ::Models::HistoricalData.intraday(
-                  security_id: args[:security_id] || args["security_id"],
-                  exchange_segment: args[:exchange_segment] || args["exchange_segment"],
-                  instrument: args[:instrument] || args["instrument"],
-                  interval: args[:interval] || args["interval"],
-                  from_date: args[:from_date] || args["from_date"],
-                  to_date: args[:to_date] || args["to_date"]
+                  security_id: security_id,
+                  exchange_segment: exchange_segment,
+                  instrument: instrument,
+                  interval: interval,
+                  from_date: from_date,
+                  to_date: to_date
                 )
 
-                # Transform to candle array format if needed
-                transform_to_candles(raw_data)
+                # Transform to production-grade format with complete flag
+                result = transform_to_candles_with_complete(raw_data, interval)
+                result[:interval] = interval
+                result
+              rescue Date::Error => e
+                {
+                  error: "Invalid date format: #{e.message}",
+                  candles: [],
+                  interval: interval || "unknown",
+                  complete: false
+                }
               rescue StandardError => e
-                { error: e.message, candles: [] }
+                {
+                  error: e.message,
+                  candles: [],
+                  interval: interval || "unknown",
+                  complete: false
+                }
               end
             }
           )
@@ -1534,6 +1699,97 @@ module Ollama
         # HELPER METHODS
         # ============================================
 
+        # Transform raw API response to production-grade candle format with complete flag
+        # Returns: { candles: [...], interval: "...", complete: true/false }
+        def self.transform_to_candles_with_complete(raw_data, interval)
+          return { candles: [], complete: false } if raw_data.nil? || raw_data.empty?
+
+          # Check if data is already in candle array format
+          if raw_data.is_a?(Array) && raw_data.first.is_a?(Hash)
+            candles = raw_data.map do |candle|
+              {
+                ts: parse_timestamp(candle[:time] || candle["time"] || candle[:ts] || candle["ts"]),
+                open: candle[:open] || candle["open"] || 0,
+                high: candle[:high] || candle["high"] || 0,
+                low: candle[:low] || candle["low"] || 0,
+                close: candle[:close] || candle["close"] || 0
+              }
+            end
+
+            # Determine if last candle is complete
+            complete = determine_candle_completeness(candles, interval)
+
+            { candles: candles, complete: complete }
+          else
+            # Transform from DhanHQ format: {"open"=>[val1, val2], "high"=>[val1, val2], ...}
+            keys = %w[open high low close]
+            return { candles: [], complete: false } unless keys.all? { |k| raw_data[k] || raw_data[k.to_sym] }
+
+            length = (raw_data["open"] || raw_data[:open])&.length || 0
+            return { candles: [], complete: false } if length.zero?
+
+            candles = (0...length).map do |i|
+              {
+                ts: parse_timestamp(raw_data["time"]&.[](i) || raw_data[:time]&.[](i) || raw_data["ts"]&.[](i) || raw_data[:ts]&.[](i)),
+                open: (raw_data["open"] || raw_data[:open])[i] || 0,
+                high: (raw_data["high"] || raw_data[:high])[i] || 0,
+                low: (raw_data["low"] || raw_data[:low])[i] || 0,
+                close: (raw_data["close"] || raw_data[:close])[i] || 0
+              }
+            end
+
+            complete = determine_candle_completeness(candles, interval)
+            { candles: candles, complete: complete }
+          end
+        end
+
+        # Parse timestamp to epoch integer
+        def self.parse_timestamp(time_value)
+          return Time.now.to_i if time_value.nil?
+
+          case time_value
+          when Integer
+            time_value
+          when String
+            Time.parse(time_value).to_i
+          when Time
+            time_value.to_i
+          else
+            Time.now.to_i
+          end
+        rescue StandardError
+          Time.now.to_i
+        end
+
+        # Determine if last candle is complete (closed)
+        # Rules:
+        # - If market is closed, last candle is complete
+        # - If current time is past the candle's end time + buffer, it's complete
+        # - For safety, assume incomplete if uncertain
+        def self.determine_candle_completeness(candles, interval)
+          return false if candles.empty?
+
+          now = Time.now
+          interval_minutes = interval.to_i
+
+          # Market hours: 9:15 AM to 3:30 PM IST
+          market_open = Time.new(now.year, now.month, now.day, 9, 15, 0, "+05:30")
+          market_close = Time.new(now.year, now.month, now.day, 15, 30, 0, "+05:30")
+
+          # If market is closed, all candles are complete
+          return true if now > market_close || now < market_open
+
+          # Get last candle timestamp
+          last_ts = candles.last[:ts]
+          last_candle_time = Time.at(last_ts)
+
+          # Candle is complete if current time is past candle end + buffer
+          candle_end = last_candle_time + (interval_minutes * 60)
+          buffer_seconds = 60 # 1 minute buffer
+          now > (candle_end + buffer_seconds)
+        end
+
+        # Transform raw API response to candle array format (legacy method for backward compatibility)
         def self.transform_to_candles(raw_data)
           return [] if raw_data.nil? || raw_data.empty?
 
