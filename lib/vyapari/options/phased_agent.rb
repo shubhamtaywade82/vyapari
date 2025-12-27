@@ -5,6 +5,7 @@ require_relative "../../ollama/agent"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
 require_relative "../../ollama/agent/iteration_limits"
+require_relative "checklist_guard"
 
 module Vyapari
   module Options
@@ -22,11 +23,12 @@ module Vyapari
         rejected: "REJECTED"
       }.freeze
 
-      def initialize(client: nil, registry: nil, safety_gate: nil, logger: nil)
+      def initialize(client: nil, registry: nil, safety_gate: nil, logger: nil, checklist_guard: nil)
         @client = client || Vyapari::Client.new
         @registry = registry
         @safety_gate = safety_gate
         @logger = logger || default_logger
+        @checklist_guard = checklist_guard || ChecklistGuard.new
         @state = STATES[:idle]
         @trade_plan = nil
         @executable_plan = nil
@@ -35,15 +37,43 @@ module Vyapari
 
       # Run complete workflow
       # @param task [String] Initial task (e.g., "Analyze NIFTY options buying")
+      # @param context [Hash] System context for checklist validation
       # @return [Hash] Complete workflow result
-      def run(task)
+      def run(task, context: {})
         @logger.info "🚀 Starting phased options trading workflow"
         @logger.info "📋 Task: #{task}"
+
+        # Global pre-check
+        precheck_result = @checklist_guard.run_global_precheck(context: context)
+        unless precheck_result[:passed]
+          @logger.error "❌ Global pre-check failed: #{precheck_result[:failures].map { |f| f[:description] }.join(', ')}"
+          return {
+            workflow: :options_trading,
+            state: STATES[:rejected],
+            phases: { global_precheck: precheck_result },
+            final_status: "precheck_failed",
+            final_output: "Global pre-check failed: #{precheck_result[:failures].map { |f| f[:description] }.join(', ')}",
+            checklist_failures: precheck_result[:failures]
+          }
+        end
+
+        # Check system kill conditions
+        kill_check = @checklist_guard.check_system_kill_conditions(system_state: context)
+        if kill_check[:should_halt]
+          @logger.error "🚨 System kill condition triggered: #{kill_check[:reason]}"
+          return {
+            workflow: :options_trading,
+            state: STATES[:rejected],
+            final_status: "system_halt",
+            final_output: "System halted: #{kill_check[:reason]}",
+            halt_reason: kill_check[:reason]
+          }
+        end
 
         result = {
           workflow: :options_trading,
           state: @state,
-          phases: {},
+          phases: { global_precheck: precheck_result },
           final_status: nil,
           final_output: nil,
           trade_plan: nil,
@@ -81,6 +111,25 @@ module Vyapari
           return result
         end
 
+        # Phase 1 checklist validation
+        mode = @trade_plan[:mode] || @trade_plan["mode"] || "OPTIONS_INTRADAY"
+        phase1_check = @checklist_guard.run_phase_1_checks(
+          mode: mode,
+          trade_plan: @trade_plan,
+          context: context.merge(analysis_result: analysis_result)
+        )
+
+        unless phase1_check[:passed]
+          @logger.error "❌ Phase 1 checklist failed: #{phase1_check[:failures].map { |f| f[:description] }.join(', ')}"
+          @state = STATES[:rejected]
+          result[:final_status] = "phase1_checklist_failed"
+          result[:final_output] = "Phase 1 checklist validation failed"
+          result[:phases][:phase1_checklist] = phase1_check
+          return result
+        end
+
+        result[:phases][:phase1_checklist] = phase1_check
+
         # PHASE 2: Plan Validation Agent
         @state = STATES[:plan_validation]
         validation_result = run_validation_phase(@trade_plan)
@@ -97,8 +146,45 @@ module Vyapari
         @executable_plan = extract_executable_plan(validation_result)
         result[:executable_plan] = @executable_plan
 
+        # Phase 2 checklist validation
+        phase2_check = @checklist_guard.run_phase_2_checks(
+          executable_plan: @executable_plan,
+          context: context.merge(validation_result: validation_result)
+        )
+
+        unless phase2_check[:passed]
+          @logger.error "❌ Phase 2 checklist failed: #{phase2_check[:failures].map { |f| f[:description] }.join(', ')}"
+          @state = STATES[:rejected]
+          result[:final_status] = "phase2_checklist_failed"
+          result[:final_output] = "Phase 2 checklist validation failed"
+          result[:phases][:phase2_checklist] = phase2_check
+          return result
+        end
+
+        result[:phases][:phase2_checklist] = phase2_check
+
         # PHASE 3: Order Execution Agent
         @state = STATES[:order_execution]
+
+        # Phase 3 checklist validation
+        phase3_check = @checklist_guard.run_phase_3_checks(
+          execution_context: context.merge(
+            trade_approved: true,
+            executable_plan: @executable_plan
+          )
+        )
+
+        unless phase3_check[:passed]
+          @logger.error "❌ Phase 3 checklist failed: #{phase3_check[:failures].map { |f| f[:description] }.join(', ')}"
+          @state = STATES[:rejected]
+          result[:final_status] = "phase3_checklist_failed"
+          result[:final_output] = "Phase 3 checklist validation failed"
+          result[:phases][:phase3_checklist] = phase3_check
+          return result
+        end
+
+        result[:phases][:phase3_checklist] = phase3_check
+
         execution_result = run_execution_phase(@executable_plan)
         result[:phases][:execution] = execution_result
 

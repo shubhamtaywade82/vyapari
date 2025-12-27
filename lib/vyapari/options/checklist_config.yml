@@ -1,0 +1,391 @@
+# Vyapari Phase-Based Checklist Configuration
+# Capital-safe checklist for Options Buying & Swing Long Trading
+
+global_precheck:
+  name: "Global Pre-Check (Mandatory for All Modes)"
+  checks:
+    - id: "market_open"
+      description: "Market is OPEN and not in pre-open / closing auction"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+    - id: "no_event_risk"
+      description: "No major event risk active (RBI, CPI, Budget, Fed overlap)"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+    - id: "websocket_connected"
+      description: "WebSocket feed is CONNECTED and tick cache healthy"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+    - id: "dhan_authenticated"
+      description: "DhanHQ REST + WS authenticated & stable"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+    - id: "not_in_cooldown"
+      description: "System not in cool-down / max loss lock"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+    - id: "no_duplicate_position"
+      description: "No existing open position for same instrument (unless pyramiding explicitly allowed)"
+      required: true
+      failure_action: "STOP_SYSTEM"
+
+phase_1_agent_a:
+  name: "Phase 1 - Agent A: Market Analysis"
+  mode_selection:
+    required: true
+    allowed_modes:
+      - "OPTIONS_INTRADAY"
+      - "SWING_LONG"
+    cannot_change_mid_analysis: true
+
+  options_intraday:
+    htf_15m:
+      name: "15m Timeframe - Regime Check"
+      required_regime:
+        - "TREND"
+        - "VOLATILITY_EXPANSION"
+      rejected_regime:
+        - "RANGE"
+        - "CHOP"
+      rejection_action: "NO_TRADE"
+      checks:
+        - id: "regime_classified"
+          description: "Market classified as TREND or VOLATILITY_EXPANSION"
+          required: true
+
+        - id: "pdh_pdl_context"
+          description: "PDH / PDL / VWAP context identified"
+          required: true
+
+        - id: "range_expansion_confirmed"
+          description: "Range expansion vs average confirmed"
+          required: true
+
+    mtf_5m:
+      name: "5m Timeframe - Direction & Momentum"
+      checks:
+        - id: "direction_decided"
+          description: "Direction decided: BULLISH or BEARISH"
+          required: true
+          allowed_values: ["BULLISH", "BEARISH"]
+
+        - id: "momentum_classified"
+          description: "Momentum classified: STRONG or MODERATE"
+          required: true
+          allowed_values: ["STRONG", "MODERATE"]
+
+        - id: "alignment_with_htf"
+          description: "5m direction agrees with 15m regime"
+          required: true
+          rejection_action: "NO_TRADE"
+
+    ltf_1m:
+      name: "1m Timeframe - Entry Trigger"
+      checks:
+        - id: "entry_trigger_identified"
+          description: "Entry trigger identified: Breakout or Pullback"
+          required: true
+          allowed_values: ["BREAKOUT", "PULLBACK"]
+
+        - id: "no_bias_override"
+          description: "Entry TF does NOT override bias"
+          required: true
+
+        - id: "invalidation_defined"
+          description: "Clear invalidation condition defined"
+          required: true
+
+    strike_selection:
+      name: "Strike Selection (Critical)"
+      checks:
+        - id: "direction_unambiguous"
+          description: "Direction → CE / PE unambiguous"
+          required: true
+
+        - id: "atm_identified"
+          description: "ATM strike identified correctly"
+          required: true
+
+        - id: "strike_range_limited"
+          description: "Only ±1 strike from ATM considered"
+          required: true
+
+        - id: "strike_based_on_factors"
+          description: "Strike chosen based on regime, momentum, volatility, time"
+          required: true
+
+        - id: "no_strike_if_weak_momentum"
+          description: "No strike if momentum weak"
+          rejection_condition: "momentum == WEAK"
+          rejection_action: "NO_TRADE"
+
+        - id: "no_strike_if_contracting_vol"
+          description: "No strike if volatility contracting"
+          rejection_condition: "volatility == CONTRACTING"
+          rejection_action: "NO_TRADE"
+
+        - id: "no_strike_after_1445"
+          description: "No strike after 14:45 IST"
+          rejection_condition: "time > 14:45"
+          rejection_action: "NO_TRADE"
+
+      required_outputs:
+        - "market_regime"
+        - "direction"
+        - "entry_logic"
+        - "strike_candidates"
+        - "stop_loss_logic"
+        - "take_profit_logic"
+        - "invalidation_rules"
+
+  swing_long:
+    htf_1d:
+      name: "1D Timeframe - Primary Trend"
+      checks:
+        - id: "trend_identified"
+          description: "Trend: UP or DOWN"
+          required: true
+          allowed_values: ["UP", "DOWN"]
+          rejection_value: "SIDEWAYS"
+          rejection_action: "NO_TRADE"
+
+        - id: "structure_identified"
+          description: "Structure: HH-HL or LH-LL"
+          required: true
+          allowed_values: ["HH_HL", "LH_LL"]
+
+        - id: "location_identified"
+          description: "Location near support / breakout"
+          required: true
+
+    mtf_1h:
+      name: "1H Timeframe - Setup"
+      checks:
+        - id: "setup_identified"
+          description: "Setup identified: Pullback, Base, or Breakout"
+          required: true
+          allowed_values: ["PULLBACK", "BASE", "BREAKOUT"]
+
+        - id: "setup_aligns_with_daily"
+          description: "Setup aligns with daily trend"
+          required: true
+
+        - id: "no_late_stage_chasing"
+          description: "No late-stage breakout chasing"
+          required: true
+
+    ltf_15m:
+      name: "15m Timeframe - Entry Zone"
+      checks:
+        - id: "entry_zone_defined"
+          description: "Precise entry zone defined"
+          required: true
+
+        - id: "invalidation_level_defined"
+          description: "Logical invalidation level defined"
+          required: true
+
+        - id: "no_htf_bias_override"
+          description: "Entry TF does not override HTF bias"
+          required: true
+
+      required_outputs:
+        - "trend_structure"
+        - "setup_type"
+        - "entry_zone"
+        - "stop_loss_logic"
+        - "take_profit_logic"
+
+phase_2_agent_b:
+  name: "Phase 2 - Agent B: Validation & Risk"
+  capital_risk_check:
+    checks:
+      - id: "funds_fetched"
+        description: "Available funds fetched successfully"
+        required: true
+
+      - id: "max_risk_defined"
+        description: "Max risk per trade defined (₹ or %)"
+        required: true
+
+      - id: "lot_size_loaded"
+        description: "Instrument lot size loaded (NIFTY=75, SENSEX=20)"
+        required: true
+        lot_sizes:
+          NIFTY: 75
+          SENSEX: 20
+          BANKNIFTY: 15
+          FINNIFTY: 50
+
+  stop_loss_validation:
+    checks:
+      - id: "sl_converted_to_numeric"
+        description: "SL logic converted to numeric SL"
+        required: true
+
+      - id: "sl_within_caps"
+        description: "SL % within caps (NIFTY ≤ 30%, SENSEX ≤ 25%)"
+        required: true
+        max_sl_percentages:
+          NIFTY: 30
+          SENSEX: 25
+          BANKNIFTY: 30
+          FINNIFTY: 30
+        rejection_action: "REJECT"
+
+  lot_size_calculation:
+    checks:
+      - id: "risk_per_lot_calculated"
+        description: "Risk per lot calculated"
+        required: true
+
+      - id: "allowed_lots_calculated"
+        description: "allowed_lots = floor(max_risk / risk_per_lot)"
+        required: true
+
+      - id: "min_lots_met"
+        description: "allowed_lots ≥ 1"
+        required: true
+        rejection_action: "REJECT"
+
+      - id: "max_lots_capped"
+        description: "Max lots cap enforced (6 lots)"
+        required: true
+        max_lots: 6
+
+  take_profit_validation:
+    checks:
+      - id: "min_rr_met"
+        description: "Minimum RR ≥ 1.5"
+        required: true
+        min_rr: 1.5
+
+      - id: "partial_booking_defined"
+        description: "Partial booking defined (if applicable)"
+        required: false
+
+      - id: "target_achievable"
+        description: "Target achievable within session/swing horizon"
+        required: true
+
+  executable_plan:
+    required_fields:
+      - "quantity"
+      - "entry_price"
+      - "stop_loss"
+      - "take_profit"
+      - "order_type"
+    order_types:
+      preferred: "SUPER"
+      fallback: "MARKET"
+    rejection_action: "REJECT_TRADE"
+
+phase_3_agent_c:
+  name: "Phase 3 - Agent C: Execution"
+  pre_execution:
+    checks:
+      - id: "trade_approved"
+        description: "Trade approved by Agent B"
+        required: true
+
+      - id: "no_duplicate_order"
+        description: "No duplicate open order exists"
+        required: true
+
+      - id: "order_type_allowed"
+        description: "Order type allowed for instrument"
+        required: true
+
+      - id: "super_order_preferred"
+        description: "Super Order preferred if supported"
+        required: false
+
+      - id: "dry_run_respected"
+        description: "DRY_RUN respected if enabled"
+        required: true
+
+  execution_rules:
+    max_attempts: 1
+    max_retries: 1
+    no_reanalysis: true
+    no_resizing: true
+    failure_action: "STOP_AND_ALERT"
+
+phase_4_position_tracking:
+  name: "Phase 4 - Position Tracking (No LLM)"
+  initialization:
+    checks:
+      - id: "position_registered"
+        description: "Position registered in PositionGuard"
+        required: true
+
+      - id: "ws_subscription_active"
+        description: "WS subscription active for option leg"
+        required: true
+
+      - id: "tickcache_receiving"
+        description: "TickCache receiving updates"
+        required: true
+
+  live_management:
+    checks:
+      - id: "trailing_sl_active"
+        description: "Trailing SL logic active"
+        required: true
+
+      - id: "emergency_sl_active"
+        description: "Emergency SL active"
+        required: true
+
+      - id: "partial_tp_handled"
+        description: "Partial TP handled correctly"
+        required: true
+
+      - id: "no_new_entries"
+        description: "No new entries while position open (unless strategy allows)"
+        required: true
+
+phase_5_completion:
+  name: "Phase 5 - Completion & Journal"
+  exit_reasons:
+    - "SL"
+    - "TP"
+    - "TRAILING"
+    - "MANUAL"
+    - "SYSTEM_ABORT"
+  required_actions:
+    - "exit_reason_recorded"
+    - "pnl_recorded"
+    - "trade_snapshot_saved"
+    - "metrics_updated"
+    - "context_cleared"
+    - "system_returns_to_idle"
+
+hard_system_kill_conditions:
+  name: "Hard System Kill Conditions"
+  conditions:
+    - id: "max_daily_loss_breached"
+      description: "Max daily loss breached"
+      action: "IMMEDIATE_HALT"
+
+    - id: "ws_disconnected_mid_position"
+      description: "WS disconnected mid-position"
+      action: "IMMEDIATE_HALT"
+
+    - id: "duplicate_execution_detected"
+      description: "Duplicate execution detected"
+      action: "IMMEDIATE_HALT"
+
+    - id: "invalid_state_transition"
+      description: "Invalid state transition"
+      action: "IMMEDIATE_HALT"
+
+    - id: "unexpected_llm_output"
+      description: "Unexpected LLM output"
+      action: "IMMEDIATE_HALT"
+
