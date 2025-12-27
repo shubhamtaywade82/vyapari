@@ -1,0 +1,1245 @@
+# frozen_string_literal: true
+
+require_relative "../tool_registry"
+require "date"
+
+module Ollama
+  class Agent
+    # Tools namespace
+    module Tools
+      # Complete DhanHQ toolset with formal tool contracts
+      # LLM never talks to DhanHQ directly - only through these tools
+      class DhanComplete
+        def self.register_all(registry:, dhan_client: nil, cache_store: nil)
+          register_market_data_tools(registry, dhan_client)
+          register_historical_tools(registry, dhan_client)
+          register_account_tools(registry, dhan_client)
+          register_trading_tools(registry, dhan_client)
+          register_super_order_tools(registry, dhan_client)
+          register_cache_tools(registry, cache_store)
+        end
+
+        # ============================================
+        # MARKET DATA TOOLS (READ-ONLY)
+        # ============================================
+
+        def self.register_market_data_tools(registry, dhan_client)
+          # 1. Instrument Lookup
+          registry.register(
+            descriptor: {
+              name: "dhan.instrument.find",
+              category: "market",
+              description: "Finds an instrument and its trading metadata by symbol and exchange",
+              when_to_use: "When resolving symbols before analysis or trading",
+              when_not_to_use: "If security_id already known from context",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  exchange_segment: {
+                    type: "string",
+                    description: "Exchange segment (e.g., 'NSE_EQ', 'NFO', 'IDX_I')"
+                  },
+                  symbol: {
+                    type: "string",
+                    description: "Symbol to find (e.g., 'NIFTY', 'RELIANCE', 'NIFTY25JAN24500CE')"
+                  }
+                },
+                required: %w[exchange_segment symbol]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" },
+                  instrument_type: { type: "string" },
+                  expiry_flag: { type: "boolean" },
+                  bracket_flag: { type: "string" },
+                  cover_flag: { type: "string" },
+                  asm_gsm_flag: { type: "string" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                inst = DhanHQ::Models::Instrument.find(
+                  args[:exchange_segment] || args["exchange_segment"],
+                  args[:symbol] || args["symbol"]
+                )
+                inst ? inst.attributes : { error: "Instrument not found" }
+              rescue StandardError => e
+                { error: e.message }
+              end
+            }
+          )
+
+          # 2. LTP (Last Traded Price)
+          registry.register(
+            descriptor: {
+              name: "dhan.market.ltp",
+              category: "market",
+              description: "Fetches latest traded price for an instrument",
+              when_to_use: "When precise entry or stop-loss calculation is needed",
+              when_not_to_use: "For fast exits (use WebSocket cache if available)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  exchange_segment: { type: "string" },
+                  security_id: { type: "string" }
+                },
+                required: %w[exchange_segment security_id]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  ltp: { type: "number" },
+                  timestamp: { type: "string" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                # Try MarketFeed.ltp if available
+                if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:ltp)
+                  result = DhanHQ::Models::MarketFeed.ltp(
+                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                    security_id: args[:security_id] || args["security_id"]
+                  )
+                  { ltp: result[:ltp] || result["ltp"] || 0, timestamp: Time.now.iso8601 }
+                else
+                  { ltp: 0, timestamp: Time.now.iso8601, error: "LTP method not available" }
+                end
+              rescue StandardError => e
+                { ltp: 0, timestamp: Time.now.iso8601, error: e.message }
+              end
+            }
+          )
+
+          # 3. Quote (Full market quote)
+          registry.register(
+            descriptor: {
+              name: "dhan.market.quote",
+              category: "market",
+              description: "Fetches full market quote including bid/ask, volume, etc.",
+              when_to_use: "When analyzing liquidity or spread before entry",
+              when_not_to_use: "If only price is needed (use LTP)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  exchange_segment: { type: "string" },
+                  security_id: { type: "string" }
+                },
+                required: %w[exchange_segment security_id]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  ltp: { type: "number" },
+                  bid: { type: "number" },
+                  ask: { type: "number" },
+                  volume: { type: "number" },
+                  open_interest: { type: "number" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:quote)
+                  DhanHQ::Models::MarketFeed.quote(
+                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                    security_id: args[:security_id] || args["security_id"]
+                  )
+                else
+                  { error: "Quote method not available" }
+                end
+              rescue StandardError => e
+                { error: e.message }
+              end
+            }
+          )
+
+          # 4. OHLC (Open, High, Low, Close)
+          registry.register(
+            descriptor: {
+              name: "dhan.market.ohlc",
+              category: "market",
+              description: "Fetches OHLC data for current day",
+              when_to_use: "When analyzing intraday price action",
+              when_not_to_use: "For historical analysis (use history.intraday)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  exchange_segment: { type: "string" },
+                  security_id: { type: "string" }
+                },
+                required: %w[exchange_segment security_id]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  open: { type: "number" },
+                  high: { type: "number" },
+                  low: { type: "number" },
+                  close: { type: "number" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:ohlc)
+                  DhanHQ::Models::MarketFeed.ohlc(
+                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                    security_id: args[:security_id] || args["security_id"]
+                  )
+                else
+                  { error: "OHLC method not available" }
+                end
+              rescue StandardError => e
+                { error: e.message }
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # HISTORICAL & RESEARCH TOOLS (READ-ONLY)
+        # ============================================
+
+        def self.register_historical_tools(registry, dhan_client)
+          # 5. Intraday OHLC
+          registry.register(
+            descriptor: {
+              name: "dhan.history.intraday",
+              category: "historical",
+              description: "Fetches intraday OHLC bars for technical analysis",
+              when_to_use: "For strategy evaluation and signal generation",
+              when_not_to_use: "For live trailing or exits (use market data)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" },
+                  exchange_segment: { type: "string" },
+                  instrument: { type: "string" },
+                  interval: {
+                    type: "string",
+                    enum: %w[1 5 15 25 60],
+                    description: "Interval in minutes"
+                  },
+                  from_date: {
+                    type: "string",
+                    description: "Start date (YYYY-MM-DD)"
+                  },
+                  to_date: {
+                    type: "string",
+                    description: "End date (YYYY-MM-DD)"
+                  }
+                },
+                required: %w[security_id exchange_segment instrument interval from_date to_date]
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    open: { type: "number" },
+                    high: { type: "number" },
+                    low: { type: "number" },
+                    close: { type: "number" },
+                    volume: { type: "number" },
+                    time: { type: "string" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                raw_data = DhanHQ::Models::HistoricalData.intraday(
+                  security_id: args[:security_id] || args["security_id"],
+                  exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                  instrument: args[:instrument] || args["instrument"],
+                  interval: args[:interval] || args["interval"],
+                  from_date: args[:from_date] || args["from_date"],
+                  to_date: args[:to_date] || args["to_date"]
+                )
+
+                # Transform to candle array format if needed
+                transform_to_candles(raw_data)
+              rescue StandardError => e
+                { error: e.message, candles: [] }
+              end
+            }
+          )
+
+          # 6. Daily OHLC
+          registry.register(
+            descriptor: {
+              name: "dhan.history.daily",
+              category: "historical",
+              description: "Fetches daily OHLC bars for swing trading analysis",
+              when_to_use: "For swing trading or longer-term analysis",
+              when_not_to_use: "For intraday trading",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" },
+                  exchange_segment: { type: "string" },
+                  instrument: { type: "string" },
+                  from_date: { type: "string" },
+                  to_date: { type: "string" }
+                },
+                required: %w[security_id exchange_segment instrument from_date to_date]
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    open: { type: "number" },
+                    high: { type: "number" },
+                    low: { type: "number" },
+                    close: { type: "number" },
+                    volume: { type: "number" },
+                    date: { type: "string" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                if DhanHQ::Models::HistoricalData.respond_to?(:daily)
+                  raw_data = DhanHQ::Models::HistoricalData.daily(
+                    security_id: args[:security_id] || args["security_id"],
+                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                    instrument: args[:instrument] || args["instrument"],
+                    from_date: args[:from_date] || args["from_date"],
+                    to_date: args[:to_date] || args["to_date"]
+                  )
+                  transform_to_candles(raw_data)
+                else
+                  { error: "Daily data method not available", candles: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, candles: [] }
+              end
+            }
+          )
+
+          # 7. Option Chain
+          registry.register(
+            descriptor: {
+              name: "dhan.option.chain",
+              category: "options",
+              description: "Fetches option chain for an expiry with strikes, premiums, Greeks",
+              when_to_use: "Strike selection and IV analysis before entry",
+              when_not_to_use: "After entry execution",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  underlying_scrip: {
+                    type: "string",
+                    description: "Underlying symbol (e.g., 'NIFTY', 'BANKNIFTY')"
+                  },
+                  underlying_seg: {
+                    type: "string",
+                    description: "Underlying segment (e.g., 'IDX_I' for indices)"
+                  },
+                  expiry: {
+                    type: "string",
+                    description: "Expiry date (YYYY-MM-DD format)"
+                  }
+                },
+                required: %w[underlying_scrip underlying_seg expiry]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  contracts: {
+                    type: "array",
+                    description: "Array of option contracts"
+                  },
+                  spot_price: { type: "number" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                if defined?(DhanHQ::Models::OptionChain)
+                  DhanHQ::Models::OptionChain.fetch(
+                    underlying_scrip: args[:underlying_scrip] || args["underlying_scrip"],
+                    underlying_seg: args[:underlying_seg] || args["underlying_seg"],
+                    expiry: args[:expiry] || args["expiry"]
+                  )
+                else
+                  { error: "OptionChain not available", contracts: [], spot_price: 0 }
+                end
+              rescue StandardError => e
+                { error: e.message, contracts: [], spot_price: 0 }
+              end
+            }
+          )
+
+          # 8. Option Expiries
+          registry.register(
+            descriptor: {
+              name: "dhan.option.expiries",
+              category: "options",
+              description: "Fetches available expiry dates for an underlying",
+              when_to_use: "Before fetching option chain to select expiry",
+              when_not_to_use: "If expiry already known",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  underlying_scrip: { type: "string" },
+                  underlying_seg: { type: "string" }
+                },
+                required: %w[underlying_scrip underlying_seg]
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "string",
+                  description: "Expiry date (YYYY-MM-DD)"
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              begin
+                if defined?(DhanHQ::Models::OptionChain) && DhanHQ::Models::OptionChain.respond_to?(:expiries)
+                  DhanHQ::Models::OptionChain.expiries(
+                    underlying_scrip: args[:underlying_scrip] || args["underlying_scrip"],
+                    underlying_seg: args[:underlying_seg] || args["underlying_seg"]
+                  )
+                else
+                  { error: "Expiries method not available", expiries: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, expiries: [] }
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # ACCOUNT STATE TOOLS (READ-ONLY)
+        # ============================================
+
+        def self.register_account_tools(registry, dhan_client)
+          # 9. Funds Balance
+          registry.register(
+            descriptor: {
+              name: "dhan.funds.balance",
+              category: "account",
+              description: "Fetches available margin and balance",
+              when_to_use: "Before placing any order to check available funds",
+              when_not_to_use: "Inside WebSocket tick handler",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {},
+                required: []
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  available_balance: { type: "number" },
+                  used_margin: { type: "number" },
+                  total_balance: { type: "number" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(_args) {
+              begin
+                if defined?(DhanHQ::Models::Funds) && DhanHQ::Models::Funds.respond_to?(:balance)
+                  DhanHQ::Models::Funds.balance
+                else
+                  { error: "Funds balance not available", available_balance: 0 }
+                end
+              rescue StandardError => e
+                { error: e.message, available_balance: 0 }
+              end
+            }
+          )
+
+          # 10. Positions List
+          registry.register(
+            descriptor: {
+              name: "dhan.positions.list",
+              category: "account",
+              description: "Fetches current open positions",
+              when_to_use: "When checking current exposure, calculating risk, or before placing new orders",
+              when_not_to_use: "If position data is already cached and recent",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {},
+                required: []
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    security_id: { type: "string" },
+                    quantity: { type: "integer" },
+                    average_price: { type: "number" },
+                    ltp: { type: "number" },
+                    pnl: { type: "number" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(_args) {
+              begin
+                if defined?(DhanHQ::Models::Position) && DhanHQ::Models::Position.respond_to?(:list)
+                  DhanHQ::Models::Position.list
+                else
+                  { error: "Positions list not available", positions: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, positions: [] }
+              end
+            }
+          )
+
+          # 11. Holdings List
+          registry.register(
+            descriptor: {
+              name: "dhan.holdings.list",
+              category: "account",
+              description: "Fetches equity holdings (for swing trading)",
+              when_to_use: "When checking equity portfolio",
+              when_not_to_use: "For options/futures trading",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {},
+                required: []
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    security_id: { type: "string" },
+                    quantity: { type: "integer" },
+                    average_price: { type: "number" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(_args) {
+              begin
+                if defined?(DhanHQ::Models::Holding) && DhanHQ::Models::Holding.respond_to?(:list)
+                  DhanHQ::Models::Holding.list
+                else
+                  { error: "Holdings list not available", holdings: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, holdings: [] }
+              end
+            }
+          )
+
+          # 12. Orders List
+          registry.register(
+            descriptor: {
+              name: "dhan.orders.list",
+              category: "account",
+              description: "Fetches order status and history",
+              when_to_use: "When checking order execution status",
+              when_not_to_use: "For real-time fills (use WebSocket)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {},
+                required: []
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    order_id: { type: "string" },
+                    status: { type: "string" },
+                    quantity: { type: "integer" },
+                    filled_quantity: { type: "integer" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(_args) {
+              begin
+                if defined?(DhanHQ::Models::Order) && DhanHQ::Models::Order.respond_to?(:list)
+                  DhanHQ::Models::Order.list
+                else
+                  { error: "Orders list not available", orders: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, orders: [] }
+              end
+            }
+          )
+
+          # 13. Today's Trades
+          registry.register(
+            descriptor: {
+              name: "dhan.trades.today",
+              category: "account",
+              description: "Fetches today's executed trades",
+              when_to_use: "When analyzing today's performance",
+              when_not_to_use: "For real-time execution (use WebSocket)",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {},
+                required: []
+              },
+              outputs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    trade_id: { type: "string" },
+                    security_id: { type: "string" },
+                    quantity: { type: "integer" },
+                    price: { type: "number" },
+                    pnl: { type: "number" }
+                  }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(_args) {
+              begin
+                if defined?(DhanHQ::Models::Trade) && DhanHQ::Models::Trade.respond_to?(:today)
+                  DhanHQ::Models::Trade.today
+                else
+                  { error: "Trades today not available", trades: [] }
+                end
+              rescue StandardError => e
+                { error: e.message, trades: [] }
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # TRADING ACTION TOOLS (WRITE - GUARDED)
+        # ============================================
+
+        def self.register_trading_tools(registry, dhan_client)
+          # 14. Place Order
+          registry.register(
+            descriptor: {
+              name: "dhan.order.place",
+              category: "trade",
+              description: "Places a standard order on DhanHQ",
+              when_to_use: "Only after risk validation and stop-loss planned",
+              when_not_to_use: "Without SL/TP planned or during uncertainty",
+              risk_level: :high,
+              side_effects: ["REAL MONEY ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  transaction_type: {
+                    type: "string",
+                    enum: %w[BUY SELL]
+                  },
+                  exchange_segment: { type: "string" },
+                  product_type: { type: "string" },
+                  order_type: {
+                    type: "string",
+                    enum: %w[MARKET LIMIT]
+                  },
+                  security_id: { type: "string" },
+                  quantity: {
+                    type: "integer",
+                    minimum: 1
+                  },
+                  price: {
+                    type: "number",
+                    nullable: true,
+                    description: "Required for LIMIT orders"
+                  }
+                },
+                required: %w[transaction_type exchange_segment product_type order_type security_id quantity]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Never place order without stoploss planned",
+                "Never exceed max position size",
+                "Never place order during market closure"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: "SIMULATED_#{Time.now.to_i}",
+                  status: "DRY_RUN",
+                  message: "Order simulated - dry-run mode active"
+                }
+              else
+                begin
+                  order = DhanHQ::Models::Order.new(
+                    transaction_type: args[:transaction_type] || args["transaction_type"],
+                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                    product_type: args[:product_type] || args["product_type"],
+                    order_type: args[:order_type] || args["order_type"],
+                    security_id: args[:security_id] || args["security_id"],
+                    quantity: args[:quantity] || args["quantity"],
+                    price: args[:price] || args["price"]
+                  )
+                  order.save
+                  { order_id: order.order_id, status: order.status }
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+
+          # 15. Modify Order
+          registry.register(
+            descriptor: {
+              name: "dhan.order.modify",
+              category: "trade",
+              description: "Modifies an existing order (price, quantity)",
+              when_to_use: "When adjusting limit price or quantity",
+              when_not_to_use: "If order already executed",
+              risk_level: :high,
+              side_effects: ["MODIFIES REAL ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  price: { type: "number" },
+                  quantity: { type: "integer" }
+                },
+                required: ["order_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Never modify executed orders",
+                "Verify order status before modification"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: args[:order_id] || args["order_id"],
+                  status: "DRY_RUN_MODIFIED",
+                  message: "Order modification simulated"
+                }
+              else
+                begin
+                  order = DhanHQ::Models::Order.find(args[:order_id] || args["order_id"])
+                  order.price = args[:price] || args["price"] if args[:price] || args["price"]
+                  order.quantity = args[:quantity] || args["quantity"] if args[:quantity] || args["quantity"]
+                  order.save
+                  { order_id: order.order_id, status: order.status }
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+
+          # 16. Cancel Order
+          registry.register(
+            descriptor: {
+              name: "dhan.order.cancel",
+              category: "trade",
+              description: "Cancels an existing order",
+              when_to_use: "When order is no longer needed",
+              when_not_to_use: "If order already executed",
+              risk_level: :high,
+              side_effects: ["CANCELS REAL ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" }
+                },
+                required: ["order_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Never cancel executed orders",
+                "Verify order status before cancellation"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: args[:order_id] || args["order_id"],
+                  status: "DRY_RUN_CANCELLED",
+                  message: "Order cancellation simulated"
+                }
+              else
+                begin
+                  order = DhanHQ::Models::Order.find(args[:order_id] || args["order_id"])
+                  order.cancel
+                  { order_id: order.order_id, status: "CANCELLED" }
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+
+          # 17. Exit Position
+          registry.register(
+            descriptor: {
+              name: "dhan.position.exit",
+              category: "trade",
+              description: "Exits an open position by placing opposite order",
+              when_to_use: "When closing a position manually",
+              when_not_to_use: "If stop-loss or target will handle exit",
+              risk_level: :high,
+              side_effects: ["REAL MONEY ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" },
+                  quantity: { type: "integer" },
+                  order_type: {
+                    type: "string",
+                    enum: %w[MARKET LIMIT]
+                  },
+                  price: { type: "number", nullable: true }
+                },
+                required: %w[security_id quantity order_type]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Verify position exists before exit",
+                "Never exit more than position size"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: "SIMULATED_EXIT_#{Time.now.to_i}",
+                  status: "DRY_RUN",
+                  message: "Position exit simulated"
+                }
+              else
+                begin
+                  # Find position and place opposite order
+                  positions = DhanHQ::Models::Position.list
+                  position = positions.find { |p| p.security_id == (args[:security_id] || args["security_id"]) }
+
+                  unless position
+                    return { order_id: nil, status: "error", error: "Position not found" }
+                  end
+
+                  # Determine opposite transaction type
+                  opposite_type = position.transaction_type == "BUY" ? "SELL" : "BUY"
+
+                  order = DhanHQ::Models::Order.new(
+                    transaction_type: opposite_type,
+                    exchange_segment: position.exchange_segment,
+                    product_type: position.product_type,
+                    order_type: args[:order_type] || args["order_type"],
+                    security_id: args[:security_id] || args["security_id"],
+                    quantity: args[:quantity] || args["quantity"],
+                    price: args[:price] || args["price"]
+                  )
+                  order.save
+                  { order_id: order.order_id, status: order.status }
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # SUPER ORDER TOOLS (WRITE - HIGH RISK)
+        # ============================================
+
+        def self.register_super_order_tools(registry, dhan_client)
+          # 18. Place Super Order (Preferred for Options)
+          registry.register(
+            descriptor: {
+              name: "dhan.super.place",
+              category: "trade",
+              description: "Places a Super Order with built-in stop-loss and target",
+              when_to_use: "Preferred execution for options buying with SL/TP",
+              when_not_to_use: "If SL cannot be defined or for manual SL management",
+              risk_level: :high,
+              side_effects: ["REAL MONEY ORDER WITH LEGS"],
+              inputs: {
+                type: "object",
+                properties: {
+                  transaction_type: {
+                    type: "string",
+                    enum: ["BUY"]
+                  },
+                  exchange_segment: { type: "string" },
+                  product_type: { type: "string" },
+                  order_type: {
+                    type: "string",
+                    enum: %w[MARKET LIMIT]
+                  },
+                  security_id: { type: "string" },
+                  quantity: {
+                    type: "integer",
+                    minimum: 1
+                  },
+                  price: { type: "number" },
+                  target_price: {
+                    type: "number",
+                    nullable: true,
+                    description: "Target price (optional)"
+                  },
+                  stop_loss_price: {
+                    type: "number",
+                    description: "Stop-loss price (required)"
+                  },
+                  trailing_jump: {
+                    type: "number",
+                    nullable: true,
+                    description: "Trailing stop jump (optional)"
+                  }
+                },
+                required: %w[transaction_type exchange_segment product_type order_type security_id quantity price stop_loss_price]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  order_status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Stop-loss is MANDATORY",
+                "Never place without risk validation",
+                "Verify funds before placing"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: "SIMULATED_SUPER_#{Time.now.to_i}",
+                  order_status: "DRY_RUN",
+                  message: "Super order simulated - dry-run mode active"
+                }
+              else
+                begin
+                  if defined?(DhanHQ::Models::SuperOrder) && DhanHQ::Models::SuperOrder.respond_to?(:create)
+                    DhanHQ::Models::SuperOrder.create(
+                      transaction_type: args[:transaction_type] || args["transaction_type"],
+                      exchange_segment: args[:exchange_segment] || args["exchange_segment"],
+                      product_type: args[:product_type] || args["product_type"],
+                      order_type: args[:order_type] || args["order_type"],
+                      security_id: args[:security_id] || args["security_id"],
+                      quantity: args[:quantity] || args["quantity"],
+                      price: args[:price] || args["price"],
+                      target_price: args[:target_price] || args["target_price"],
+                      stop_loss_price: args[:stop_loss_price] || args["stop_loss_price"],
+                      trailing_jump: args[:trailing_jump] || args["trailing_jump"]
+                    )
+                  else
+                    { order_id: nil, order_status: "error", error: "SuperOrder not available" }
+                  end
+                rescue StandardError => e
+                  { order_id: nil, order_status: "error", error: e.message }
+                end
+              end
+            }
+          )
+
+          # 19. Modify Super Order
+          registry.register(
+            descriptor: {
+              name: "dhan.super.modify",
+              category: "trade",
+              description: "Modifies stop-loss or target of a Super Order",
+              when_to_use: "When adjusting SL/TP levels",
+              when_not_to_use: "If order already executed",
+              risk_level: :high,
+              side_effects: ["MODIFIES REAL SUPER ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  target_price: { type: "number", nullable: true },
+                  stop_loss_price: { type: "number", nullable: true },
+                  trailing_jump: { type: "number", nullable: true }
+                },
+                required: ["order_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Never modify executed orders",
+                "Stop-loss adjustment must be safer (wider)"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: args[:order_id] || args["order_id"],
+                  status: "DRY_RUN_MODIFIED",
+                  message: "Super order modification simulated"
+                }
+              else
+                begin
+                  if defined?(DhanHQ::Models::SuperOrder) && DhanHQ::Models::SuperOrder.respond_to?(:modify)
+                    DhanHQ::Models::SuperOrder.modify(
+                      order_id: args[:order_id] || args["order_id"],
+                      target_price: args[:target_price] || args["target_price"],
+                      stop_loss_price: args[:stop_loss_price] || args["stop_loss_price"],
+                      trailing_jump: args[:trailing_jump] || args["trailing_jump"]
+                    )
+                  else
+                    { order_id: nil, status: "error", error: "SuperOrder modify not available" }
+                  end
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+
+          # 20. Cancel Super Order
+          registry.register(
+            descriptor: {
+              name: "dhan.super.cancel",
+              category: "trade",
+              description: "Cancels a Super Order",
+              when_to_use: "When order is no longer needed",
+              when_not_to_use: "If order already executed",
+              risk_level: :high,
+              side_effects: ["CANCELS REAL SUPER ORDER"],
+              inputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" }
+                },
+                required: ["order_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  order_id: { type: "string" },
+                  status: { type: "string" }
+                }
+              },
+              safety_rules: [
+                "Never cancel executed orders",
+                "Verify order status before cancellation"
+              ]
+            },
+            handler: ->(args) {
+              if ENV["DRY_RUN"] == "true" || ENV["DRY_RUN_MODE"] == "true"
+                {
+                  order_id: args[:order_id] || args["order_id"],
+                  status: "DRY_RUN_CANCELLED",
+                  message: "Super order cancellation simulated"
+                }
+              else
+                begin
+                  if defined?(DhanHQ::Models::SuperOrder) && DhanHQ::Models::SuperOrder.respond_to?(:cancel)
+                    DhanHQ::Models::SuperOrder.cancel(args[:order_id] || args["order_id"])
+                  else
+                    { order_id: nil, status: "error", error: "SuperOrder cancel not available" }
+                  end
+                rescue StandardError => e
+                  { order_id: nil, status: "error", error: e.message }
+                end
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # CACHE TOOLS (READ - WebSocket Data)
+        # ============================================
+
+        def self.register_cache_tools(registry, cache_store)
+          # 21. Cache LTP (from WebSocket)
+          registry.register(
+            descriptor: {
+              name: "dhan.cache.ltp",
+              category: "cache",
+              description: "Gets LTP from WebSocket cache (faster than API call)",
+              when_to_use: "For fast price checks during live trading",
+              when_not_to_use: "If WebSocket not connected or cache stale",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" }
+                },
+                required: ["security_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  ltp: { type: "number" },
+                  timestamp: { type: "string" },
+                  cached: { type: "boolean" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              if cache_store
+                cached = cache_store.get("ltp:#{args[:security_id] || args['security_id']}")
+                if cached
+                  { ltp: cached[:ltp] || cached["ltp"] || 0, timestamp: cached[:timestamp] || cached["timestamp"], cached: true }
+                else
+                  { ltp: 0, timestamp: Time.now.iso8601, cached: false, error: "Not in cache" }
+                end
+              else
+                { ltp: 0, timestamp: Time.now.iso8601, cached: false, error: "Cache store not configured" }
+              end
+            }
+          )
+
+          # 22. Cache Tick (from WebSocket)
+          registry.register(
+            descriptor: {
+              name: "dhan.cache.tick",
+              category: "cache",
+              description: "Gets latest tick data from WebSocket cache",
+              when_to_use: "For real-time bid/ask during execution",
+              when_not_to_use: "If WebSocket not connected",
+              risk_level: :none,
+              inputs: {
+                type: "object",
+                properties: {
+                  security_id: { type: "string" }
+                },
+                required: ["security_id"]
+              },
+              outputs: {
+                type: "object",
+                properties: {
+                  ltp: { type: "number" },
+                  bid: { type: "number" },
+                  ask: { type: "number" },
+                  volume: { type: "number" },
+                  timestamp: { type: "string" },
+                  cached: { type: "boolean" }
+                }
+              },
+              side_effects: [],
+              safety_rules: []
+            },
+            handler: ->(args) {
+              if cache_store
+                cached = cache_store.get("tick:#{args[:security_id] || args['security_id']}")
+                if cached
+                  {
+                    ltp: cached[:ltp] || cached["ltp"] || 0,
+                    bid: cached[:bid] || cached["bid"] || 0,
+                    ask: cached[:ask] || cached["ask"] || 0,
+                    volume: cached[:volume] || cached["volume"] || 0,
+                    timestamp: cached[:timestamp] || cached["timestamp"],
+                    cached: true
+                  }
+                else
+                  { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false, error: "Not in cache" }
+                end
+              else
+                { ltp: 0, bid: 0, ask: 0, volume: 0, timestamp: Time.now.iso8601, cached: false, error: "Cache store not configured" }
+              end
+            }
+          )
+        end
+
+        # ============================================
+        # HELPER METHODS
+        # ============================================
+
+        def self.transform_to_candles(raw_data)
+          return [] if raw_data.nil? || raw_data.empty?
+
+          # If already in candle array format
+          if raw_data.is_a?(Array) && raw_data.first.is_a?(Hash) && (raw_data.first.key?("open") || raw_data.first.key?(:open))
+            return raw_data
+          end
+
+          # Transform from API format {open: [], high: [], ...} to [{open: val, high: val, ...}, ...]
+          if raw_data.is_a?(Hash)
+            keys = raw_data.keys.map(&:to_s)
+            length = raw_data[keys.first]&.length || 0
+
+            (0...length).map do |i|
+              keys.each_with_object({}) do |key, candle|
+                candle[key] = raw_data[key][i] if raw_data[key]
+              end
+            end
+          else
+            []
+          end
+        end
+      end
+    end
+  end
+end
+

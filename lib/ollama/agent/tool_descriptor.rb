@@ -6,11 +6,12 @@ module Ollama
     # This is what the LLM sees, not Ruby code
     class ToolDescriptor
       attr_reader :name, :description, :when_to_use, :when_not_to_use,
-                  :inputs, :outputs, :side_effects, :safety_rules
+                  :inputs, :outputs, :side_effects, :safety_rules, :category, :risk_level
 
       def initialize(name:, description:, inputs:, outputs:,
                      when_to_use: nil, when_not_to_use: nil,
-                     side_effects: [], safety_rules: [])
+                     side_effects: [], safety_rules: [],
+                     category: nil, risk_level: :none)
         @name = name
         @description = description
         @when_to_use = when_to_use
@@ -19,11 +20,13 @@ module Ollama
         @outputs = normalize_schema(outputs)
         @side_effects = Array(side_effects)
         @safety_rules = Array(safety_rules)
+        @category = category
+        @risk_level = risk_level
       end
 
       # Convert to JSON schema format for LLM
       def to_schema
-        {
+        schema = {
           name: @name,
           description: @description,
           when_to_use: @when_to_use,
@@ -33,6 +36,9 @@ module Ollama
           side_effects: @side_effects,
           safety_rules: @safety_rules
         }
+        schema[:category] = @category if @category
+        schema[:risk_level] = @risk_level
+        schema
       end
 
       # Convert to JSON string for prompt injection
