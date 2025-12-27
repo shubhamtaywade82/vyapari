@@ -7,7 +7,7 @@ module Ollama
     # Conversational chat session
     # Manages message history and uses /api/chat for multi-turn conversations
     class Session
-      def initialize(client: nil, model: "mistral")
+      def initialize(client: nil, model: ENV.fetch("OLLAMA_MODEL", "llama3.2:3b"))
         @client = client || Client.new
         @model = model
         @messages = []

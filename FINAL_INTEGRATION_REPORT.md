@@ -72,15 +72,15 @@ PhasedAgent.run(task, context: {...})
 
 ## Component Integration Map
 
-| Component | Status | Integration Point |
-|-----------|--------|-------------------|
-| **ChecklistGuard** | ✅ | `PhasedAgent.run()` - All phases |
-| **EnhancedDhanTools** | ✅ | `ToolRegistryAdapter` → `CompleteIntegration` |
-| **Tool Descriptors** | ✅ | `build_*_prompt()` methods - All phases |
-| **RiskCalculator** | ✅ | `run_validation_phase()` - Pre-validation |
-| **MTFAgentA** | ✅ | `run_analysis_phase()` - Phase 1 |
-| **PromptBuilder** | ⚠️ | Created but not used (prompts built manually) |
-| **DebugLoop** | ⚠️ | Created but not integrated |
+| Component             | Status | Integration Point                             |
+| --------------------- | ------ | --------------------------------------------- |
+| **ChecklistGuard**    | ✅      | `PhasedAgent.run()` - All phases              |
+| **EnhancedDhanTools** | ✅      | `ToolRegistryAdapter` → `CompleteIntegration` |
+| **Tool Descriptors**  | ✅      | `build_*_prompt()` methods - All phases       |
+| **RiskCalculator**    | ✅      | `run_validation_phase()` - Pre-validation     |
+| **MTFAgentA**         | ✅      | `run_analysis_phase()` - Phase 1              |
+| **PromptBuilder**     | ⚠️      | Created but not used (prompts built manually) |
+| **DebugLoop**         | ⚠️      | Created but not integrated                    |
 
 ---
 

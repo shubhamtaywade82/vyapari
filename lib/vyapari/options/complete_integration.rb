@@ -9,8 +9,8 @@ require_relative "agent_prompts"
 require_relative "../../ollama/agent/tools/dhan_complete"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
-require_relative "../../tools/tool_registry_adapter"
-require_relative "../../tools/enhanced_dhan_tools"
+require_relative "../tools/tool_registry_adapter"
+require_relative "../tools/enhanced_dhan_tools"
 
 module Vyapari
   module Options
@@ -45,10 +45,12 @@ module Vyapari
           )
         )
 
-        # 4. Create phased agent
+        # 4. Create phased agent (enable test mode only if explicitly requested)
+        test_mode = ENV.fetch("VYAPARI_TEST_MODE", "false") == "true"
         phased_agent = PhasedAgent.new(
           registry: registry,
-          safety_gate: safety_gate
+          safety_gate: safety_gate,
+          test_mode: test_mode
         )
 
         {
@@ -106,14 +108,24 @@ module Vyapari
 
         puts "\nPhase Results:"
         result[:phases].each do |phase, phase_result|
+          next unless phase_result.is_a?(Hash)
+
           puts "\n  #{phase.to_s.upcase}:"
-          puts "    Status: #{phase_result[:status]}"
-          puts "    Iterations: #{phase_result[:iterations]}/#{phase_result[:max_iterations]}"
-          puts "    Duration: #{phase_result[:duration].round(2)}s"
+          puts "    Status: #{phase_result[:status]}" if phase_result[:status]
+          if phase_result[:iterations] && phase_result[:max_iterations]
+            puts "    Iterations: #{phase_result[:iterations]}/#{phase_result[:max_iterations]}"
+          end
+          if phase_result[:duration] && phase_result[:duration].respond_to?(:round)
+            puts "    Duration: #{phase_result[:duration].round(2)}s"
+          end
         end
 
         # Total LLM calls
-        total_llm_calls = result[:phases].sum { |_, pr| pr[:iterations] }
+        total_llm_calls = result[:phases].sum do |_, pr|
+          next 0 unless pr.is_a?(Hash)
+
+          (pr[:iterations] || pr["iterations"] || 0).to_i
+        end
         puts "\nTotal LLM Calls: #{total_llm_calls} (max allowed: #{Ollama::Agent::IterationLimits::MAX_LLM_CALLS_PER_TRADE})"
 
         {
@@ -136,12 +148,8 @@ module Vyapari
           puts "  LLM Allowed: #{config[:llm_allowed]}"
           puts "  Max Iterations: #{config[:max_iterations]}"
           puts "  Purpose: #{config[:purpose]}"
-          if config[:allowed_tools]
-            puts "  Allowed Tools: #{config[:allowed_tools].join(', ')}"
-          end
-          if config[:blocked_tools]
-            puts "  Blocked Tools: #{config[:blocked_tools].join(', ')}"
-          end
+          puts "  Allowed Tools: #{config[:allowed_tools].join(", ")}" if config[:allowed_tools]
+          puts "  Blocked Tools: #{config[:blocked_tools].join(", ")}" if config[:blocked_tools]
         end
 
         puts "\n" + "=" * 70
@@ -158,4 +166,3 @@ end
 # Uncomment to run examples:
 # Vyapari::Options::CompleteIntegration.show_architecture
 # Vyapari::Options::CompleteIntegration.run_complete_workflow(task: "Analyze NIFTY options buying")
-

@@ -55,8 +55,8 @@ module Vyapari
         @client = client || create_ollama_client
         @registry = registry
         @mode = mode
-        @timeframe_config = TIMEFRAME_CONFIGS[@mode]
-        @iteration_budget = ITERATION_BUDGET[@mode]
+        @timeframe_config = TIMEFRAME_CONFIGS[@mode] || TIMEFRAME_CONFIGS[:options_intraday]
+        @iteration_budget = ITERATION_BUDGET[@mode] || ITERATION_BUDGET[:options_intraday]
       end
 
       # Run complete MTF analysis
@@ -74,7 +74,7 @@ module Vyapari
         # PHASE 1: Higher Timeframe Analysis
         htf_result = analyze_htf(task)
         result[:timeframes][:htf] = htf_result
-        result[:iterations_used] += htf_result[:iterations]
+        result[:iterations_used] += (htf_result[:iterations] || 0)
 
         # Early exit if HTF says NO_TRADE
         if htf_result[:tradable] == false || htf_result[:regime] == "NO_TRADE"
@@ -86,7 +86,7 @@ module Vyapari
         # PHASE 2: Mid Timeframe Analysis
         mtf_result = analyze_mtf(htf_result, task)
         result[:timeframes][:mtf] = mtf_result
-        result[:iterations_used] += mtf_result[:iterations]
+        result[:iterations_used] += (mtf_result[:iterations] || 0)
 
         # Check alignment with HTF
         unless aligned_with_htf?(htf_result, mtf_result)
@@ -98,13 +98,13 @@ module Vyapari
         # PHASE 3: Lower Timeframe Trigger
         ltf_result = analyze_ltf(mtf_result, task)
         result[:timeframes][:ltf] = ltf_result
-        result[:iterations_used] += ltf_result[:iterations]
+        result[:iterations_used] += (ltf_result[:iterations] || 0)
 
         # PHASE 4: Strike Selection (OPTIONS MODE ONLY)
         if @mode == :options_intraday
           strike_result = analyze_strike_selection(htf_result, mtf_result, ltf_result, task)
           result[:timeframes][:strike_selection] = strike_result
-          result[:iterations_used] += strike_result[:iterations]
+          result[:iterations_used] += (strike_result[:iterations] || 0)
 
           # Early exit if no valid strikes
           if strike_result[:candidates].empty?
@@ -119,7 +119,7 @@ module Vyapari
 
         # PHASE 5: Final Synthesis
         synthesis_result = synthesize_trade_plan(htf_result, mtf_result, ltf_result, strike_result)
-        result[:iterations_used] += synthesis_result[:iterations]
+        result[:iterations_used] += (synthesis_result[:iterations] || 0)
         result[:trade_plan] = synthesis_result[:trade_plan]
         result[:status] = synthesis_result[:status]
 
@@ -144,7 +144,7 @@ module Vyapari
         config = @timeframe_config[:mtf]
         prompt = build_mtf_prompt(config, htf_result, task)
 
-        agent = create_agent(max_iterations: @iteration_budget[:mtf_analysis])
+        agent = create_agent(max_iterations: @iteration_budget[:mtf_analysis] || 2)
         result = agent.loop(task: prompt)
 
         extract_mtf_result(result, config)
@@ -155,7 +155,7 @@ module Vyapari
         config = @timeframe_config[:ltf]
         prompt = build_ltf_prompt(config, mtf_result, task)
 
-        agent = create_agent(max_iterations: @iteration_budget[:ltf_trigger])
+        agent = create_agent(max_iterations: @iteration_budget[:ltf_trigger] || 2)
         result = agent.loop(task: prompt)
 
         extract_ltf_result(result, config)
@@ -165,7 +165,7 @@ module Vyapari
       def analyze_strike_selection(htf_result, mtf_result, ltf_result, task)
         prompt = build_strike_selection_prompt(htf_result, mtf_result, ltf_result, task)
 
-        agent = create_agent(max_iterations: @iteration_budget[:strike_selection])
+        agent = create_agent(max_iterations: @iteration_budget[:strike_selection] || 2)
         result = agent.loop(task: prompt)
 
         {
@@ -180,13 +180,13 @@ module Vyapari
       def synthesize_trade_plan(htf_result, mtf_result, ltf_result, strike_result = nil)
         prompt = build_synthesis_prompt(htf_result, mtf_result, ltf_result, strike_result)
 
-        agent = create_agent(max_iterations: @iteration_budget[:synthesis])
+        agent = create_agent(max_iterations: @iteration_budget[:synthesis] || 1)
         result = agent.loop(task: prompt)
 
         {
           trade_plan: extract_trade_plan(result),
           status: result[:status] == "completed" ? "completed" : "failed",
-          iterations: result[:iterations]
+          iterations: result[:iterations] || 0
         }
       end
 
@@ -678,7 +678,7 @@ module Vyapari
           regime: extract_regime(agent_result),
           tradable: extract_tradable(agent_result),
           reason: agent_result[:reason],
-          iterations: agent_result[:iterations]
+          iterations: agent_result[:iterations] || 0
         }
       end
 
@@ -690,7 +690,7 @@ module Vyapari
           momentum: extract_momentum(agent_result),
           aligned_with_htf: extract_alignment(agent_result),
           reason: agent_result[:reason],
-          iterations: agent_result[:iterations]
+          iterations: agent_result[:iterations] || 0
         }
       end
 
@@ -702,7 +702,7 @@ module Vyapari
           trigger: extract_trigger(agent_result),
           sl_level: extract_sl_level(agent_result),
           reason: agent_result[:reason],
-          iterations: agent_result[:iterations]
+          iterations: agent_result[:iterations] || 0
         }
       end
 

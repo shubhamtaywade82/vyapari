@@ -78,6 +78,9 @@ module Ollama
             trace << { iteration: iteration, tool_call: { tool: tool_name, args: tool_args }, result: result,
                        timestamp: Time.now }
 
+            # For tool_call, check if result indicates error
+            results = [result]
+
           elsif action.nil? || action.empty?
             # Legacy: support steps array format
             steps = plan["steps"] || plan[:steps] || []
@@ -86,14 +89,17 @@ module Ollama
             results = @executor.execute_many(steps, context: context)
             context.concat(results)
             trace << { iteration: iteration, results: results, timestamp: Time.now }
+          else
+            # Unknown action type, create empty results array
+            results = []
           end
 
           # Check for stop condition
           stop_reason = plan["stop_reason"] || plan[:stop_reason]
           return build_result(context, trace, "completed", stop_reason) if stop_reason && !stop_reason.empty?
 
-          # Check if we should continue
-          return build_result(context, trace, "completed", "Stop condition met") if should_stop?(results)
+          # Check if we should continue (only if results is not nil/empty)
+          return build_result(context, trace, "completed", "Stop condition met") if results && should_stop?(results)
         end
 
         build_result(context, trace, "max_iterations", "Reached max iterations: #{@max_iterations}")
@@ -119,8 +125,13 @@ module Ollama
       end
 
       def should_stop?(results)
-        # Stop if all results indicate completion or error
-        results.all? { |r| r["status"] == "error" || r[:status] == "error" }
+        # Stop if all results indicate error (not success)
+        return false unless results && results.respond_to?(:all?) && !results.empty?
+        # Only stop if ALL results are errors
+        results.all? { |r|
+          status = r["status"] || r[:status]
+          status == "error" || status == "rejected"
+        }
       end
 
       def build_result(context, trace, status, reason)

@@ -241,6 +241,9 @@ module Vyapari
         case check_id
         when "market_open"
           context[:market_open] != false
+        when "no_event_risk"
+          # Pass if no event risk is present (context[:event_risk] is false or nil)
+          context[:event_risk] != true && context["event_risk"] != true
         when "websocket_connected"
           context[:websocket_connected] == true
         when "dhan_authenticated"

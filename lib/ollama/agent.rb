@@ -6,7 +6,7 @@ module Ollama
   # High-level agent orchestration
   # Combines planner, executor, verifier, and loop into a single interface
   class Agent
-    DEFAULT_MODEL = "mistral"
+    DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "llama3.2:3b")
     DEFAULT_PLAN_SCHEMA = {
       "type" => "object",
       "properties" => {
