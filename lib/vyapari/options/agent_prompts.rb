@@ -36,11 +36,24 @@ module Vyapari
           - Question: Where exactly do we enter?
           - Purpose: Entry candle, SL placement, invalidation
           - CRITICAL: 1m CANNOT change bias from higher TFs
-          - Tools: dhan.history.intraday (interval=1), dhan.option.chain
+          - Tools: dhan.history.intraday (interval=1)
 
-          STEP 4: Synthesis - Final TradePlan
-          - Combine all three timeframe analyses
-          - Output final TradePlan JSON
+          STEP 4: Strike Selection (OPTIONS MODE ONLY)
+          - Question: Which strike should we trade?
+          - Purpose: Select strike candidates based on momentum + volatility + time
+          - CRITICAL: Strike selection is FUNCTION of market structure, not "cheap premium"
+          - Tools: dhan.option.chain, dhan.market.ltp
+          - Rules:
+            1. Direction → CE or PE (from MTF analysis)
+            2. Market Regime → How far OTM (Strong Trend = 1 OTM, Normal = ATM, Range = NO_TRADE)
+            3. Momentum Strength → ITM vs ATM vs OTM (Strong = slight OTM, Moderate = ATM, Weak = NO_TRADE)
+            4. Volatility Filter → Check VIX/IV expansion (Expanding = allow OTM, Average = ATM, Contracting = NO_TRADE)
+            5. Time Remaining → Respect theta decay (9:20-11:30 = ATM/1OTM, 11:30-13:30 = ATM, 13:30-14:45 = ITM/ATM, After 14:45 = NO NEW TRADES)
+          - Output: Strike candidates (±1-2 strikes around ATM only)
+
+          STEP 5: Synthesis - Final TradePlan
+          - Combine all timeframe analyses + strike selection
+          - Output final TradePlan JSON with strike_selection
 
           ALLOWED TOOLS:
           - dhan.instrument.find (find trading instruments)
@@ -75,16 +88,32 @@ module Vyapari
             },
             "bias": "BULLISH | BEARISH | NO_TRADE",
             "strike_bias": "CE | PE",
+            "strike_selection": {
+              "preferred_type": "CE | PE",
+              "atm_strike": 22500,
+              "candidates": [
+                {
+                  "security_id": "string",
+                  "strike": 22500,
+                  "type": "CE | PE",
+                  "moneyness": "ATM | ITM | OTM",
+                  "reason": "explanation",
+                  "risk_note": "note about risk"
+                }
+              ]
+            },
             "invalidations": ["condition1", "condition2"]
           }
 
           RULES:
-          1. Follow the exact order: 15m → 5m → 1m → synthesis
+          1. Follow the exact order: 15m → 5m → 1m → strike_selection → synthesis
           2. Lower TF cannot override higher TF
           3. Any TF disagreement → NO_TRADE
           4. Entry TF (1m) only refines price, never bias
-          5. Maximum 7 iterations total (2+2+2+1)
-          6. If you cannot form a clear plan → return NO_TRADE
+          5. Strike selection is MANDATORY for OPTIONS_INTRADAY mode
+          6. Strike selection limited to ±1-2 strikes around ATM only
+          7. Maximum 9 iterations total (2+2+2+2+1)
+          8. If you cannot form a clear plan → return NO_TRADE
 
           STOP CONDITIONS:
           - 15m = NO_TRADE → stop immediately
@@ -152,12 +181,44 @@ module Vyapari
               "type" => "string",
               "enum" => %w[CE PE]
             },
+            "strike_selection" => {
+              "type" => "object",
+              "properties" => {
+                "preferred_type" => {
+                  "type" => "string",
+                  "enum" => %w[CE PE]
+                },
+                "atm_strike" => { "type" => "number" },
+                "candidates" => {
+                  "type" => "array",
+                  "items" => {
+                    "type" => "object",
+                    "properties" => {
+                      "security_id" => { "type" => "string" },
+                      "strike" => { "type" => "number" },
+                      "type" => {
+                        "type" => "string",
+                        "enum" => %w[CE PE]
+                      },
+                      "moneyness" => {
+                        "type" => "string",
+                        "enum" => %w[ATM ITM OTM]
+                      },
+                      "reason" => { "type" => "string" },
+                      "risk_note" => { "type" => "string" }
+                    },
+                    "required" => %w[security_id strike type moneyness reason]
+                  }
+                }
+              },
+              "required" => %w[preferred_type atm_strike candidates]
+            },
             "invalidations" => {
               "type" => "array",
               "items" => { "type" => "string" }
             }
           },
-          "required" => %w[mode htf mtf ltf bias strike_bias invalidations]
+          "required" => %w[mode htf mtf ltf bias strike_bias strike_selection invalidations]
         }
       end
 

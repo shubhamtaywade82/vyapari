@@ -71,7 +71,13 @@ module Vyapari
                 to_date: "<today>"
               },
               purpose: "Fetch 1m OHLC for entry trigger"
-            },
+            }
+          ],
+          analysis: "Determine entry trigger and SL level (refines price only, never changes bias)"
+        },
+        strike_selection: {
+          iterations: 2,
+          tools: [
             {
               tool: "dhan.option.chain",
               args: {
@@ -79,10 +85,18 @@ module Vyapari
                 underlying_seg: "IDX_I",
                 expiry: "<from_expiry_list>"
               },
-              purpose: "Get option chain for strike selection"
+              purpose: "Get option chain with strikes, premiums, Greeks"
+            },
+            {
+              tool: "dhan.market.ltp",
+              args: {
+                exchange_segment: "IDX_I",
+                security_id: "<from_htf>"
+              },
+              purpose: "Get current spot price for ATM calculation"
             }
           ],
-          analysis: "Determine entry trigger and SL level (refines price only, never changes bias)"
+          analysis: "Select strike candidates based on: Direction → Regime → Momentum → Volatility → Time. Limited to ±1-2 strikes around ATM only."
         },
         synthesis: {
           iterations: 1,
@@ -202,7 +216,7 @@ module Vyapari
         output += "\n" + "=" * 50 + "\n"
         total_iterations = plan.values.sum { |c| c[:iterations] }
         output += "Total Iterations: #{total_iterations}\n"
-        output += "Fits within budget: #{total_iterations <= 8 ? 'YES ✅' : 'NO ❌'}\n"
+        output += "Fits within budget: #{total_iterations <= 9 ? 'YES ✅' : 'NO ❌'}\n"
 
         output
       end

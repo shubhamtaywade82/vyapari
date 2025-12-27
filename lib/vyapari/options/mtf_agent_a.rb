@@ -4,6 +4,7 @@
 # Fixed, ordered, top-down MTF pass (no backtracking)
 
 require_relative "agent_prompts"
+require_relative "strike_selection_framework"
 require "json"
 
 module Vyapari
@@ -37,8 +38,9 @@ module Vyapari
           htf_analysis: 2,
           mtf_analysis: 2,
           ltf_trigger: 2,
+          strike_selection: 2,
           synthesis: 1,
-          total: 7
+          total: 9
         },
         swing_trading: {
           htf_analysis: 2,
@@ -98,8 +100,25 @@ module Vyapari
         result[:timeframes][:ltf] = ltf_result
         result[:iterations_used] += ltf_result[:iterations]
 
-        # PHASE 4: Final Synthesis
-        synthesis_result = synthesize_trade_plan(htf_result, mtf_result, ltf_result)
+        # PHASE 4: Strike Selection (OPTIONS MODE ONLY)
+        if @mode == :options_intraday
+          strike_result = analyze_strike_selection(htf_result, mtf_result, ltf_result, task)
+          result[:timeframes][:strike_selection] = strike_result
+          result[:iterations_used] += strike_result[:iterations]
+
+          # Early exit if no valid strikes
+          if strike_result[:candidates].empty?
+            result[:status] = "no_trade"
+            result[:reason] = "No valid strike candidates found: #{strike_result[:reason]}"
+            return result
+          end
+        else
+          # Swing trading doesn't need strike selection
+          strike_result = nil
+        end
+
+        # PHASE 5: Final Synthesis
+        synthesis_result = synthesize_trade_plan(htf_result, mtf_result, ltf_result, strike_result)
         result[:iterations_used] += synthesis_result[:iterations]
         result[:trade_plan] = synthesis_result[:trade_plan]
         result[:status] = synthesis_result[:status]
@@ -142,9 +161,24 @@ module Vyapari
         extract_ltf_result(result, config)
       end
 
+      # Analyze strike selection (OPTIONS MODE ONLY)
+      def analyze_strike_selection(htf_result, mtf_result, ltf_result, task)
+        prompt = build_strike_selection_prompt(htf_result, mtf_result, ltf_result, task)
+
+        agent = create_agent(max_iterations: @iteration_budget[:strike_selection])
+        result = agent.loop(task: prompt)
+
+        {
+          candidates: extract_strike_candidates(result),
+          atm_strike: extract_atm_strike(result),
+          reason: extract_strike_reason(result),
+          iterations: result[:iterations]
+        }
+      end
+
       # Synthesize final trade plan
-      def synthesize_trade_plan(htf_result, mtf_result, ltf_result)
-        prompt = build_synthesis_prompt(htf_result, mtf_result, ltf_result)
+      def synthesize_trade_plan(htf_result, mtf_result, ltf_result, strike_result = nil)
+        prompt = build_synthesis_prompt(htf_result, mtf_result, ltf_result, strike_result)
 
         agent = create_agent(max_iterations: @iteration_budget[:synthesis])
         result = agent.loop(task: prompt)
@@ -429,19 +463,97 @@ module Vyapari
         PROMPT
       end
 
+      # Build strike selection prompt
+      def build_strike_selection_prompt(htf_result, mtf_result, ltf_result, task)
+        <<~PROMPT
+          You are performing STRIKE SELECTION for options trading.
+
+          CRITICAL: Strike selection is a FUNCTION of MOMENTUM + VOLATILITY + TIME LEFT,
+          NOT "nearest ATM" or "cheap premium".
+
+          CONTEXT FROM TIMEFRAME ANALYSIS:
+          Higher TF (15m): #{JSON.pretty_generate(htf_result)}
+          Mid TF (5m): #{JSON.pretty_generate(mtf_result)}
+          Lower TF (1m): #{JSON.pretty_generate(ltf_result)}
+
+          DECISION FRAMEWORK (ANSWER IN ORDER):
+
+          1. Direction → CE or PE
+             - From MTF analysis: #{mtf_result[:direction]}
+             - Decision: #{mtf_result[:direction] == "BULLISH" ? "CE" : "PE"}
+
+          2. Market Regime → How FAR OTM?
+             - 15m Regime: #{htf_result[:regime]}
+             - Strong Trend/Expansion → ATM to 1 step OTM
+             - Normal Trend → ATM only
+             - Range/Chop → NO_TRADE (already filtered)
+
+          3. Momentum Strength → ITM vs ATM vs OTM
+             - 5m Momentum: #{mtf_result[:momentum]}
+             - STRONG → ATM or slight OTM
+             - MODERATE → ATM only
+             - WEAK → NO_TRADE (already filtered)
+
+          4. Volatility Filter (MANDATORY)
+             - Check VIX/IV or 15m candle expansion
+             - Vol expanding → Allow OTM
+             - Vol average → ATM only
+             - Vol contracting → NO_TRADE
+
+          5. Time Remaining (Intraday Reality)
+             - Current time: #{Time.now.strftime("%H:%M")}
+             - 9:20-11:30 → ATM/1 OTM
+             - 11:30-13:30 → ATM only
+             - 13:30-14:45 → ITM/ATM
+             - After 14:45 → NO NEW TRADES
+
+          TOOLS TO USE:
+          - dhan.option.chain (get option chain with strikes, premiums, Greeks)
+          - dhan.market.ltp (get current spot price)
+
+          OUTPUT SCHEMA:
+          {
+            "preferred_type": "CE | PE",
+            "atm_strike": 22500,
+            "candidates": [
+              {
+                "security_id": "string",
+                "strike": 22500,
+                "type": "CE | PE",
+                "moneyness": "ATM | ITM | OTM",
+                "reason": "explanation",
+                "risk_note": "note about risk"
+              }
+            ]
+          }
+
+          RULES:
+          1. Fetch option chain for ±1-2 strikes around ATM ONLY
+          2. Do NOT scan entire chain (creates noise)
+          3. Extract: strike, LTP, delta (if available), IV (if available), bid-ask spread
+          4. Apply all 5 filters above
+          5. Maximum #{@iteration_budget[:strike_selection]} iterations
+          6. Output final strike candidates (action: "final")
+
+          TASK: #{task}
+
+          REMEMBER: Strike selection is PART of analysis, but execution happens after Agent B validates.
+        PROMPT
+      end
+
       # Build synthesis prompt
-      def build_synthesis_prompt(htf_result, mtf_result, ltf_result)
+      def build_synthesis_prompt(htf_result, mtf_result, ltf_result, strike_result = nil)
         if @mode == :options_intraday
-          build_options_synthesis_prompt(htf_result, mtf_result, ltf_result)
+          build_options_synthesis_prompt(htf_result, mtf_result, ltf_result, strike_result)
         else
           build_swing_synthesis_prompt(htf_result, mtf_result, ltf_result)
         end
       end
 
       # Build Options synthesis prompt
-      def build_options_synthesis_prompt(htf_result, mtf_result, ltf_result)
-        <<~PROMPT
-          Synthesize the multi-timeframe analysis into a final TradePlan.
+      def build_options_synthesis_prompt(htf_result, mtf_result, ltf_result, strike_result = nil)
+        prompt = <<~PROMPT
+          Synthesize the multi-timeframe analysis + strike selection into a final TradePlan.
 
           HIGHER TIMEFRAME (15m):
           #{JSON.pretty_generate(htf_result)}
@@ -451,6 +563,17 @@ module Vyapari
 
           LOWER TIMEFRAME (1m):
           #{JSON.pretty_generate(ltf_result)}
+        PROMPT
+
+        if strike_result
+          prompt += <<~PROMPT
+
+            STRIKE SELECTION:
+            #{JSON.pretty_generate(strike_result)}
+          PROMPT
+        end
+
+        prompt += <<~PROMPT
 
           OUTPUT SCHEMA (TradePlan):
           {
@@ -472,17 +595,34 @@ module Vyapari
             },
             "bias": "BULLISH | BEARISH | NO_TRADE",
             "strike_bias": "CE | PE",
+            "strike_selection": {
+              "preferred_type": "CE | PE",
+              "atm_strike": 22500,
+              "candidates": [
+                {
+                  "security_id": "string",
+                  "strike": 22500,
+                  "type": "CE | PE",
+                  "moneyness": "ATM | ITM | OTM",
+                  "reason": "explanation",
+                  "risk_note": "note about risk"
+                }
+              ]
+            },
             "invalidations": ["condition1", "condition2"]
           }
 
           RULES:
-          1. Combine all three timeframe analyses
+          1. Combine all timeframe analyses + strike selection
           2. Determine final bias from MTF direction
           3. Set strike bias (CE for bullish, PE for bearish)
-          4. List invalidation conditions
-          5. Maximum 1 iteration
-          6. Output final TradePlan (action: "final")
+          4. Include strike_selection from strike analysis
+          5. List invalidation conditions
+          6. Maximum 1 iteration
+          7. Output final TradePlan (action: "final")
         PROMPT
+
+        prompt
       end
 
       # Build Swing synthesis prompt
@@ -661,6 +801,42 @@ module Vyapari
 
       def extract_sl_level(result)
         extract_from_result(result, "sl_level") || 0
+      end
+
+      def extract_strike_candidates(result)
+        final_output = result[:reason] || ""
+        context = result[:context] || []
+
+        # Try JSON parse
+        json_match = final_output.match(/\{[\s\S]*\}/)
+        if json_match
+          begin
+            parsed = JSON.parse(json_match[0])
+            return parsed["candidates"] || parsed[:candidates] || []
+          rescue JSON::ParserError
+            # Continue
+          end
+        end
+
+        # Check context
+        context.each do |item|
+          if item.is_a?(Hash) && (item[:result] || item["result"])
+            result_data = item[:result] || item["result"]
+            if result_data.is_a?(Hash) && (result_data[:candidates] || result_data["candidates"])
+              return result_data[:candidates] || result_data["candidates"] || []
+            end
+          end
+        end
+
+        []
+      end
+
+      def extract_atm_strike(result)
+        extract_from_result(result, "atm_strike") || 0
+      end
+
+      def extract_strike_reason(result)
+        extract_from_result(result, "reason") || "No reason provided"
       end
 
       def extract_from_result(result, key)
