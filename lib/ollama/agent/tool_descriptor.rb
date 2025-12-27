@@ -113,8 +113,12 @@ module Ollama
           "required_states" => Array(normalized["required_states"] || normalized[:required_states]),
           "required_guards" => Array(normalized["required_guards"] || normalized[:required_guards]),
           "forbidden_after" => Array(normalized["forbidden_after"] || normalized[:forbidden_after]),
+          "forbidden_states" => Array(normalized["forbidden_states"] || normalized[:forbidden_states]),
+          "forbidden_callers" => Array(normalized["forbidden_callers"] || normalized[:forbidden_callers]),
           "max_calls_per_trade" => normalized["max_calls_per_trade"] || normalized[:max_calls_per_trade],
-          "derived_inputs" => normalized["derived_inputs"] || normalized[:derived_inputs] || {}
+          "derived_inputs" => normalized["derived_inputs"] || normalized[:derived_inputs] || {},
+          "produces" => Array(normalized["produces"] || normalized[:produces]),
+          "date_constraints" => normalized["date_constraints"] || normalized[:date_constraints] || {}
         }
       end
 

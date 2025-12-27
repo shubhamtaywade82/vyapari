@@ -34,6 +34,11 @@ module Ollama
               when_to_use: "When resolving symbols before analysis or trading",
               when_not_to_use: "If security_id already known from context",
               risk_level: :none,
+              dependencies: {
+                required_tools: [],
+                required_outputs: [],
+                produces: ["instrument"]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -84,6 +89,12 @@ module Ollama
               when_to_use: "When precise entry or stop-loss calculation is needed",
               when_not_to_use: "For fast exits (use WebSocket cache if available)",
               risk_level: :none,
+              dependencies: {
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -166,6 +177,12 @@ module Ollama
               when_to_use: "When analyzing liquidity or spread before entry",
               when_not_to_use: "If only price is needed (use LTP)",
               risk_level: :none,
+              dependencies: {
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -212,6 +229,12 @@ module Ollama
               when_to_use: "When analyzing intraday price action",
               when_not_to_use: "For historical analysis (use history.intraday)",
               risk_level: :none,
+              dependencies: {
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -273,6 +296,38 @@ module Ollama
                 "During ORDER_EXECUTION or POSITION_TRACKING phases"
               ],
               risk_level: :none,
+              dependencies: {
+                required_tools: ["dhan.instrument.find"],
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment",
+                  "instrument.instrument_type",
+                  "analysis_context.interval",
+                  "analysis_context.from_date",
+                  "analysis_context.to_date",
+                  "analysis_context.date_mode"
+                ],
+                forbidden_states: ["ORDER_EXECUTION", "POSITION_TRACKING"],
+                derived_inputs: {
+                  "security_id" => "instrument.security_id",
+                  "exchange_segment" => "instrument.exchange_segment",
+                  "instrument" => "instrument.instrument_type",
+                  "interval" => "analysis_context.interval",
+                  "from_date" => "analysis_context.from_date",
+                  "to_date" => "analysis_context.to_date"
+                },
+                date_constraints: {
+                  "LIVE" => {
+                    "to_date" => "TODAY",
+                    "from_date" => "LAST_TRADING_DAY_BEFORE"
+                  },
+                  "HISTORICAL" => {
+                    "from_date" => "<= to_date",
+                    "must_be_trading_days" => true
+                  }
+                },
+                produces: ["intraday_candles"]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -297,12 +352,12 @@ module Ollama
                   from_date: {
                     type: "string",
                     format: "date",
-                    description: "Must be a trading day. In LIVE mode, must be the last trading day before to_date."
+                    description: "Start date (must be < to_date in LIVE mode)"
                   },
                   to_date: {
                     type: "string",
                     format: "date",
-                    description: "In LIVE mode, must be today's date and a trading day."
+                    description: "End date (must be today in LIVE mode)"
                   }
                 },
                 required: %w[security_id exchange_segment instrument interval from_date to_date]
@@ -340,8 +395,9 @@ module Ollama
               side_effects: [],
               safety_rules: [
                 "Never use last candle if complete=false",
-                "LIVE mode requires previous-session trading day context",
-                "from_date must never be a weekend or exchange holiday",
+                "LIVE mode requires previous-session context",
+                "from_date must be a trading day (never weekend or holiday)",
+                "Controller resolves last trading day automatically",
                 "Interval must match analysis_context interval",
                 "Do not mix multiple intervals in the same reasoning step",
                 "Do not call repeatedly in the same iteration"
@@ -357,7 +413,7 @@ module Ollama
                       from_date: "2025-01-17",
                       to_date: "2025-01-20"
                     },
-                    comment: "LIVE intraday NIFTY analysis on Monday using last trading day (Friday)"
+                    comment: "LIVE intraday NIFTY analysis on Monday with last trading day (Friday) - correct Monday handling"
                   },
                   {
                     input: {
@@ -365,24 +421,13 @@ module Ollama
                       exchange_segment: "IDX_I",
                       instrument: "INDEX",
                       interval: "15",
-                      from_date: "2024-12-02",
+                      from_date: "2024-12-01",
                       to_date: "2024-12-31"
                     },
-                    comment: "HISTORICAL intraday data for backtesting using trading days only"
+                    comment: "HISTORICAL intraday data for backtesting"
                   }
                 ],
                 invalid: [
-                  {
-                    input: {
-                      security_id: "13",
-                      exchange_segment: "IDX_I",
-                      instrument: "INDEX",
-                      interval: "5",
-                      from_date: "2025-01-19",
-                      to_date: "2025-01-20"
-                    },
-                    reason: "from_date is a Sunday and not a trading day"
-                  },
                   {
                     input: {
                       security_id: "13",
@@ -393,6 +438,15 @@ module Ollama
                       to_date: "2025-01-20"
                     },
                     reason: "LIVE mode cannot use same-day from_date and to_date"
+                  },
+                  {
+                    input: {
+                      security_id: "13",
+                      exchange_segment: "IDX_I",
+                      instrument: "INDEX",
+                      interval: "5"
+                    },
+                    reason: "Missing exchange_segment, instrument, and date range"
                   },
                   {
                     input: {
@@ -426,19 +480,22 @@ module Ollama
                 from_dt = Date.parse(from_date)
                 to_dt = Date.parse(to_date)
 
-                # Check if dates are valid trading days (basic check - weekends)
-                if from_dt.sunday? || from_dt.saturday?
+                # Check if dates are valid trading days (using TradingCalendar)
+                require_relative "../../vyapari/trading_calendar"
+                trading_validation_from = Vyapari::TradingCalendar.validate_trading_day(from_dt)
+                unless trading_validation_from[:valid]
                   return {
-                    error: "from_date (#{from_date}) is a weekend and not a trading day",
+                    error: "from_date (#{from_date}) #{trading_validation_from[:error]}",
                     candles: [],
                     interval: interval,
                     complete: false
                   }
                 end
 
-                if to_dt.sunday? || to_dt.saturday?
+                trading_validation_to = Vyapari::TradingCalendar.validate_trading_day(to_dt)
+                unless trading_validation_to[:valid]
                   return {
-                    error: "to_date (#{to_date}) is a weekend and not a trading day",
+                    error: "to_date (#{to_date}) #{trading_validation_to[:error]}",
                     candles: [],
                     interval: interval,
                     complete: false
@@ -496,6 +553,13 @@ module Ollama
               when_to_use: "For swing trading or longer-term analysis",
               when_not_to_use: "For intraday trading",
               risk_level: :none,
+              dependencies: {
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment",
+                  "instrument.instrument_type"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1008,6 +1072,10 @@ module Ollama
               when_to_use: "When checking current exposure, calculating risk, or before placing new orders",
               when_not_to_use: "If position data is already cached and recent",
               risk_level: :none,
+              dependencies: {
+                required_tools: [],
+                produces: ["open_positions"]
+              },
               inputs: {
                 type: "object",
                 properties: {},
@@ -1123,6 +1191,9 @@ module Ollama
               when_to_use: "When checking order execution status",
               when_not_to_use: "For real-time fills (use WebSocket)",
               risk_level: :none,
+              dependencies: {
+                required_tools: []
+              },
               inputs: {
                 type: "object",
                 properties: {},
@@ -1310,13 +1381,9 @@ module Ollama
               side_effects: ["MODIFIES REAL ORDER"],
               dependencies: {
                 required_outputs: [
-                  "order_exists",
-                  "order_status"
+                  "order_id"
                 ],
-                forbidden_after: [
-                  "order_executed",
-                  "order_cancelled"
-                ]
+                max_calls_per_trade: 1
               },
               inputs: {
                 type: "object",
@@ -1372,13 +1439,9 @@ module Ollama
               side_effects: ["CANCELS REAL ORDER"],
               dependencies: {
                 required_outputs: [
-                  "order_exists",
-                  "order_status"
+                  "order_id"
                 ],
-                forbidden_after: [
-                  "order_executed",
-                  "order_cancelled"
-                ]
+                max_calls_per_trade: 1
               },
               inputs: {
                 type: "object",
@@ -1616,13 +1679,9 @@ module Ollama
               side_effects: ["MODIFIES REAL SUPER ORDER"],
               dependencies: {
                 required_outputs: [
-                  "order_exists",
-                  "order_status"
+                  "order_id"
                 ],
-                forbidden_after: [
-                  "order_executed",
-                  "order_cancelled"
-                ]
+                max_calls_per_trade: 1
               },
               inputs: {
                 type: "object",
@@ -1684,13 +1743,9 @@ module Ollama
               side_effects: ["CANCELS REAL SUPER ORDER"],
               dependencies: {
                 required_outputs: [
-                  "order_exists",
-                  "order_status"
+                  "order_id"
                 ],
-                forbidden_after: [
-                  "order_executed",
-                  "order_cancelled"
-                ]
+                max_calls_per_trade: 1
               },
               inputs: {
                 type: "object",
