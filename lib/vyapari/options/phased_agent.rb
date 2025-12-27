@@ -120,37 +120,43 @@ module Vyapari
 
       private
 
-      # PHASE 1: Market Analysis Agent
+      # PHASE 1: Market Analysis Agent (Multi-Timeframe)
       # Purpose: Produce TradePlan JSON (NO orders, NO risk decisions)
       def run_analysis_phase(task)
-        @logger.info "📊 PHASE 1: Market Analysis (max 8 iterations)"
+        @logger.info "📊 PHASE 1: Market Analysis - Multi-Timeframe (max 7 iterations)"
 
-        # Create analysis-specific registry (only analysis tools)
-        analysis_registry = create_analysis_registry
+        require_relative "mtf_agent_a"
 
-        # Create analysis agent
-        analysis_agent = Ollama::Agent.new(
+        # Create MTF Agent A
+        mtf_agent = MTFAgentA.new(
           client: @client.is_a?(Ollama::Client) ? @client : create_ollama_client,
-          registry: analysis_registry,
-          max_iterations: Ollama::Agent::IterationLimits::ANALYSIS,
-          timeout: 60
+          registry: @registry,
+          mode: :options_intraday
         )
 
-        # Build analysis prompt
-        analysis_prompt = build_analysis_prompt(task)
+        # Run MTF analysis
+        mtf_result = mtf_agent.run(task)
 
-        # Run agent
-        result = analysis_agent.loop(task: analysis_prompt)
+        # Convert MTF result to standard format
+        result = {
+          status: mtf_result[:status] == "completed" ? "completed" : "failed",
+          reason: mtf_result[:reason] || "MTF analysis complete",
+          iterations: mtf_result[:iterations_used],
+          context: [],
+          trace: [],
+          duration: 0
+        }
 
         {
           phase: :analysis,
           status: result[:status] == "completed" ? "completed" : "failed",
           reason: result[:reason],
           iterations: result[:iterations],
-          max_iterations: Ollama::Agent::IterationLimits::ANALYSIS,
+          max_iterations: 7, # MTF budget: 2+2+2+1 = 7
           context: result[:context],
           trace: result[:trace],
-          duration: result[:duration]
+          duration: result[:duration],
+          mtf_result: mtf_result # Include full MTF result
         }
       end
 
@@ -312,6 +318,11 @@ module Vyapari
 
       # Extract trade plan from analysis result
       def extract_trade_plan(analysis_result)
+        # Check for MTF result first
+        if analysis_result[:mtf_result] && analysis_result[:mtf_result][:trade_plan]
+          return normalize_trade_plan(analysis_result[:mtf_result][:trade_plan])
+        end
+
         final_output = analysis_result[:reason] || ""
         context = analysis_result[:context] || []
 

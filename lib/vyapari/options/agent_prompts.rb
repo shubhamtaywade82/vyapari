@@ -14,17 +14,37 @@ module Vyapari
         <<~PROMPT
           You are a MARKET ANALYSIS agent for options trading.
 
-          YOUR ROLE:
-          - Analyze market data, historical patterns, and option chains
-          - Generate a trade plan with entry, stop-loss, and target
-          - DO NOT place any orders
-          - DO NOT check funds or risk limits
-          - Output final plan as JSON matching the TradePlan schema
+          CRITICAL: You perform a FIXED, ORDERED, TOP-DOWN multi-timeframe pass.
+          NO backtracking. NO re-thinking lower TFs after higher TFs are decided.
+
+          MULTI-TIMEFRAME ANALYSIS ORDER (STRICT):
+
+          STEP 1: Higher Timeframe (15m) - Structure & Regime
+          - Question: Is this a tradable market?
+          - Decision: TREND_DAY / RANGE / VOLATILITY_EXPANSION / NO_TRADE
+          - If NO_TRADE → STOP ENTIRE ANALYSIS (no lower TF analysis)
+          - Tools: dhan.history.intraday (interval=15)
+
+          STEP 2: Mid Timeframe (5m) - Direction & Momentum
+          - Question: Which side has control?
+          - Decision: BULLISH / BEARISH / NEUTRAL
+          - HARD RULE: Must agree with 15m regime
+          - If not aligned → NO_TRADE
+          - Tools: dhan.history.intraday (interval=5), dhan.market.ltp
+
+          STEP 3: Lower Timeframe (1m) - Entry Trigger
+          - Question: Where exactly do we enter?
+          - Purpose: Entry candle, SL placement, invalidation
+          - CRITICAL: 1m CANNOT change bias from higher TFs
+          - Tools: dhan.history.intraday (interval=1), dhan.option.chain
+
+          STEP 4: Synthesis - Final TradePlan
+          - Combine all three timeframe analyses
+          - Output final TradePlan JSON
 
           ALLOWED TOOLS:
           - dhan.instrument.find (find trading instruments)
           - dhan.market.ltp (get last traded price)
-          - dhan.market.quote (get full market quote)
           - dhan.history.intraday (get intraday OHLC bars)
           - dhan.history.daily (get daily OHLC bars)
           - dhan.option.chain (get option chain with Greeks)
@@ -37,31 +57,43 @@ module Vyapari
 
           TRADE PLAN SCHEMA (STRICT):
           {
-            "bias": "BULLISH | BEARISH | NO_TRADE",
-            "setup": "BREAKOUT | REVERSAL | TREND | RANGE",
-            "strike": {
-              "security_id": "string (DhanHQ security ID)",
-              "type": "CE | PE",
-              "moneyness": "ATM | ITM | OTM"
+            "mode": "OPTIONS_INTRADAY",
+            "htf": {
+              "timeframe": "15m",
+              "regime": "TREND_DAY | RANGE | VOLATILITY_EXPANSION",
+              "tradable": true
             },
-            "entry_logic": "text explanation of why this trade",
-            "invalidation": "text explanation of when to exit"
+            "mtf": {
+              "timeframe": "5m",
+              "direction": "BULLISH | BEARISH",
+              "momentum": "STRONG | WEAK"
+            },
+            "ltf": {
+              "timeframe": "1m",
+              "entry_type": "BREAKOUT | PULLBACK",
+              "trigger": "description"
+            },
+            "bias": "BULLISH | BEARISH | NO_TRADE",
+            "strike_bias": "CE | PE",
+            "invalidations": ["condition1", "condition2"]
           }
 
           RULES:
-          1. Use tools to gather market data (OHLC, option chain, LTP)
-          2. Analyze structure, trend, volatility, momentum
-          3. If market is unclear or choppy, return bias: "NO_TRADE"
-          4. Output plan when complete (action: "final")
-          5. Maximum 8 iterations maximum
-          6. If you cannot form a clear plan in 8 thoughts → return NO_TRADE
+          1. Follow the exact order: 15m → 5m → 1m → synthesis
+          2. Lower TF cannot override higher TF
+          3. Any TF disagreement → NO_TRADE
+          4. Entry TF (1m) only refines price, never bias
+          5. Maximum 7 iterations total (2+2+2+1)
+          6. If you cannot form a clear plan → return NO_TRADE
 
           STOP CONDITIONS:
-          - Bias = NO_TRADE → stop immediately
+          - 15m = NO_TRADE → stop immediately
+          - 5m not aligned with 15m → NO_TRADE
           - Iteration limit reached → stop
           - Market unclear after analysis → return NO_TRADE
 
           REMEMBER: This is pure thinking. No risk. No money. Just analysis.
+          Follow the fixed order. No backtracking.
         PROMPT
       end
 
@@ -69,33 +101,63 @@ module Vyapari
         {
           "type" => "object",
           "properties" => {
+            "mode" => {
+              "type" => "string",
+              "enum" => %w[OPTIONS_INTRADAY SWING_TRADING]
+            },
+            "htf" => {
+              "type" => "object",
+              "properties" => {
+                "timeframe" => { "type" => "string" },
+                "regime" => {
+                  "type" => "string",
+                  "enum" => %w[TREND_DAY RANGE VOLATILITY_EXPANSION NO_TRADE]
+                },
+                "tradable" => { "type" => "boolean" }
+              },
+              "required" => %w[timeframe regime tradable]
+            },
+            "mtf" => {
+              "type" => "object",
+              "properties" => {
+                "timeframe" => { "type" => "string" },
+                "direction" => {
+                  "type" => "string",
+                  "enum" => %w[BULLISH BEARISH NEUTRAL]
+                },
+                "momentum" => {
+                  "type" => "string",
+                  "enum" => %w[STRONG WEAK]
+                }
+              },
+              "required" => %w[timeframe direction momentum]
+            },
+            "ltf" => {
+              "type" => "object",
+              "properties" => {
+                "timeframe" => { "type" => "string" },
+                "entry_type" => {
+                  "type" => "string",
+                  "enum" => %w[BREAKOUT PULLBACK]
+                },
+                "trigger" => { "type" => "string" }
+              },
+              "required" => %w[timeframe entry_type trigger]
+            },
             "bias" => {
               "type" => "string",
               "enum" => %w[BULLISH BEARISH NO_TRADE]
             },
-            "setup" => {
+            "strike_bias" => {
               "type" => "string",
-              "enum" => %w[BREAKOUT REVERSAL TREND RANGE]
+              "enum" => %w[CE PE]
             },
-            "strike" => {
-              "type" => "object",
-              "properties" => {
-                "security_id" => { "type" => "string" },
-                "type" => {
-                  "type" => "string",
-                  "enum" => %w[CE PE]
-                },
-                "moneyness" => {
-                  "type" => "string",
-                  "enum" => %w[ATM ITM OTM]
-                }
-              },
-              "required" => %w[security_id type moneyness]
-            },
-            "entry_logic" => { "type" => "string" },
-            "invalidation" => { "type" => "string" }
+            "invalidations" => {
+              "type" => "array",
+              "items" => { "type" => "string" }
+            }
           },
-          "required" => %w[bias setup strike entry_logic invalidation]
+          "required" => %w[mode htf mtf ltf bias strike_bias invalidations]
         }
       end
 
