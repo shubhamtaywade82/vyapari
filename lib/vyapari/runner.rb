@@ -124,51 +124,51 @@ module Vyapari
           output << "\n⚠️  WARNING: #{warning_msg}"
         end
 
-          result[:result].each do |key, value|
-            # Skip error and warning (already shown above)
-            next if [:error, "error", :warning, "warning"].include?(key)
+        result[:result].each do |key, value|
+          # Skip error and warning (already shown above)
+          next if [:error, "error", :warning, "warning"].include?(key)
 
-            if value.is_a?(Array)
-              output << "  #{key}: [#{value.length} items]"
-              # For option chain contracts, show more details
-              if key.to_s == "contracts" && value.any?
-                value.each_with_index do |item, idx|
-                  if item.is_a?(Hash)
-                    # Format contract nicely
-                    strike = item[:strike] || item["strike"]
-                    type = item[:type] || item["type"]
-                    ltp = item[:ltp] || item["ltp"]
-                    bid = item[:bid] || item["bid"]
-                    ask = item[:ask] || item["ask"]
-                    oi = item[:open_interest] || item["open_interest"]
-                    delta = item[:delta] || item["delta"]
-                    iv = item[:implied_volatility] || item["implied_volatility"]
-                    quality = item[:quality_score] || item["quality_score"]
+          if value.is_a?(Array)
+            output << "  #{key}: [#{value.length} items]"
+            # For option chain contracts, show more details
+            if key.to_s == "contracts" && value.any?
+              value.each_with_index do |item, idx|
+                if item.is_a?(Hash)
+                  # Format contract nicely
+                  strike = item[:strike] || item["strike"]
+                  type = item[:type] || item["type"]
+                  ltp = item[:ltp] || item["ltp"]
+                  bid = item[:bid] || item["bid"]
+                  ask = item[:ask] || item["ask"]
+                  oi = item[:open_interest] || item["open_interest"]
+                  delta = item[:delta] || item["delta"]
+                  iv = item[:implied_volatility] || item["implied_volatility"]
+                  quality = item[:quality_score] || item["quality_score"]
 
-                    contract_str = "[#{idx + 1}] Strike: #{strike}, Type: #{type}, LTP: #{ltp}, Bid: #{bid}, Ask: #{ask}"
-                    contract_str += ", OI: #{oi}" if oi && oi > 0
-                    contract_str += ", Delta: #{delta.round(3)}" if delta && delta != 0
-                    contract_str += ", IV: #{iv.round(2)}%" if iv && iv > 0
-                    contract_str += ", Quality: #{quality.round(1)}" if quality
-                    output << "    #{contract_str}"
-                  else
-                    output << "    [#{idx + 1}] #{item.inspect}"
-                  end
-                end
-              else
-                # For other arrays, show first 10 items
-                value.first(10).each_with_index do |item, idx|
+                  contract_str = "[#{idx + 1}] Strike: #{strike}, Type: #{type}, LTP: #{ltp}, Bid: #{bid}, Ask: #{ask}"
+                  contract_str += ", OI: #{oi}" if oi && oi > 0
+                  contract_str += ", Delta: #{delta.round(3)}" if delta && delta != 0
+                  contract_str += ", IV: #{iv.round(2)}%" if iv && iv > 0
+                  contract_str += ", Quality: #{quality.round(1)}" if quality
+                  output << "    #{contract_str}"
+                else
                   output << "    [#{idx + 1}] #{item.inspect}"
                 end
-                output << "    ... (#{value.length - 10} more)" if value.length > 10
               end
-            elsif value.is_a?(Hash)
-              output << "  #{key}:"
-              value.each { |k, v| output << "    #{k}: #{v.inspect}" }
             else
-              output << "  #{key}: #{value.inspect}"
+              # For other arrays, show first 10 items
+              value.first(10).each_with_index do |item, idx|
+                output << "    [#{idx + 1}] #{item.inspect}"
+              end
+              output << "    ... (#{value.length - 10} more)" if value.length > 10
             end
+          elsif value.is_a?(Hash)
+            output << "  #{key}:"
+            value.each { |k, v| output << "    #{k}: #{v.inspect}" }
+          else
+            output << "  #{key}: #{value.inspect}"
           end
+        end
       else
         output << "  #{result[:result].inspect}"
       end
