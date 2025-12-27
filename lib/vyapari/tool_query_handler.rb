@@ -311,6 +311,9 @@ module Vyapari
           # For intraday historical, resolve symbol and set up dates
           args = resolve_intraday_historical_args(args) if tool_info[:tool] == "dhan.history.intraday"
 
+          # For daily historical, resolve symbol and set up dates
+          args = resolve_daily_historical_args(args) if tool_info[:tool] == "dhan.history.daily"
+
           # Call the tool
           result = call_tool(tool_info[:tool], args)
 
@@ -404,7 +407,13 @@ module Vyapari
           * For stocks: exchange_segment = "NSE_EQ" or "BSE_EQ"
         - dhan.market.ltp REQUIRES: security_id AND exchange_segment (get from instrument.find first)
         - dhan.history.intraday REQUIRES: security_id, exchange_segment, instrument, interval, from_date, to_date
+          * Use for intraday timeframes: 1m, 5m, 15m, 1h, etc.
+        - dhan.history.daily REQUIRES: security_id, exchange_segment, instrument, from_date, to_date
+          * Use for daily candles (1D timeframe)
+        - dhan.option.expiries REQUIRES: underlying_scrip (integer security_id), underlying_seg (must call dhan.instrument.find first)
         - dhan.option.chain REQUIRES: underlying_scrip (integer security_id), underlying_seg, expiry
+          * CRITICAL: You MUST call dhan.option.expiries FIRST to get the expiry_list, then use expiry_list[0] as the expiry
+          * Do NOT call dhan.option.chain without first calling dhan.option.expiries
 
         Examples:
         - "get NIFTY ltp" or "NIFTY price" →
@@ -415,7 +424,9 @@ module Vyapari
         - "NIFTY option chain" →
           1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
           2. Use security_id as underlying_scrip (convert to integer)
-          3. Call dhan.option.chain with underlying_scrip, underlying_seg="IDX_I", expiry (auto-resolve if needed)
+          3. Call dhan.option.expiries with underlying_scrip and underlying_seg="IDX_I" (REQUIRED - must be called first)
+          4. Use the first expiry from the expiry_list result
+          5. Call dhan.option.chain with underlying_scrip, underlying_seg="IDX_I", expiry (from expiry_list[0])
 
         - "NIFTY intraday 5min" or "Show me NIFTY 1 minute candles" →
           1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
@@ -425,6 +436,15 @@ module Vyapari
              - to_date: TODAY's date (#{Date.today.strftime("%Y-%m-%d")}) or last trading day if weekend
              - from_date: Last trading day before to_date (usually yesterday, or Friday if today is Monday)
              - CRITICAL: NEVER use old dates like 2022-02-25 or 2022-03-01 - ALWAYS use current dates!
+
+        - "NIFTY daily candles" or "Show me NIFTY daily" →
+          1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
+          2. Get security_id and instrument_type from result
+          3. Call dhan.history.daily with:
+             - security_id, exchange_segment="IDX_I", instrument
+             - to_date: TODAY's date (#{Date.today.strftime("%Y-%m-%d")}) or last trading day if weekend
+             - from_date: A date in the past (e.g., 30 days ago, or last month)
+             - CRITICAL: NEVER use old dates like 2022 - ALWAYS use current year dates!
 
         - "my balance" or "funds" → call dhan.funds.balance (no args needed)
         - "show positions" → call dhan.positions.list (no args needed)
@@ -474,23 +494,27 @@ module Vyapari
           tool_name = tool_call[:tool] || tool_call["tool"] || "unknown"
           tool_args = tool_call[:args] || tool_call["args"] || {}
 
-          # For intraday historical queries, ensure dates are current (fix LLM's old dates)
+          # Clean tool arguments: remove HTML/XML comments, malformed keys, and non-string/number values
+          tool_args = sanitize_tool_args(tool_args)
+
+          # For historical queries, ensure dates are current (fix LLM's old dates)
+          # ALWAYS resolve dates and re-execute to ensure we use current dates, not old ones from LLM
           if tool_name == "dhan.history.intraday"
-            original_to_date = tool_args[:to_date] || tool_args["to_date"]
             tool_args = resolve_intraday_historical_args(tool_args)
-            # If dates were corrected, re-execute the tool with correct dates
-            if original_to_date && (tool_args[:to_date] || tool_args["to_date"]) != original_to_date
-              # Dates were corrected, need to re-execute the tool call
-              require_relative "options/complete_integration"
-              system = Options::CompleteIntegration.setup_system(dry_run: true)
-              registry = system[:registry]
-              tool_result = registry.call(tool_name, tool_args)
-              tool_result = tool_result[:result] || tool_result if tool_result.is_a?(Hash)
-            else
-              # Get result from context (last item) or from the tool call result
-              context = result[:context] || []
-              tool_result = last_tool_call[:result] || context.last || result[:reason] || {}
-            end
+            # Always re-execute with corrected dates
+            require_relative "options/complete_integration"
+            system = Options::CompleteIntegration.setup_system(dry_run: true)
+            registry = system[:registry]
+            tool_result = registry.call(tool_name, tool_args)
+            tool_result = tool_result[:result] || tool_result if tool_result.is_a?(Hash)
+          elsif tool_name == "dhan.history.daily"
+            tool_args = resolve_daily_historical_args(tool_args)
+            # Always re-execute with corrected dates
+            require_relative "options/complete_integration"
+            system = Options::CompleteIntegration.setup_system(dry_run: true)
+            registry = system[:registry]
+            tool_result = registry.call(tool_name, tool_args)
+            tool_result = tool_result[:result] || tool_result if tool_result.is_a?(Hash)
           else
             # Get result from context (last item) or from the tool call result
             context = result[:context] || []
@@ -741,6 +765,61 @@ module Vyapari
         end
       end
 
+      # ALWAYS overwrite dates to ensure they're current (fix LLM's old dates)
+      today = Date.today
+
+      # Use TradingCalendar for proper trading day resolution
+      require_relative "trading_calendar"
+      live_dates = Vyapari::TradingCalendar.resolve_live_dates(today)
+
+      # Set to_date to today (or last trading day if weekend)
+      to_date = Date.parse(live_dates[:to_date])
+      args[:to_date] = to_date.strftime("%Y-%m-%d")
+      args["to_date"] = args[:to_date] # Ensure both keys exist
+
+      # Calculate from_date based on interval to ensure enough candles for indicators
+      interval = (args[:interval] || args["interval"] || "5").to_i
+      from_dt = calculate_from_date_for_interval(args[:to_date], interval)
+      args[:from_date] = from_dt.strftime("%Y-%m-%d")
+      args["from_date"] = args[:from_date] # Ensure both keys exist
+
+      # Remove any old date keys (symbol or string versions)
+      args.delete_if { |k, _v| k.to_s.match?(/^(from_date|to_date)$/i) && k != :from_date && k != :to_date && k != "from_date" && k != "to_date" }
+
+      # Ensure interval is a string
+      args[:interval] = args[:interval].to_s if args[:interval]
+      args["interval"] = args[:interval] if args[:interval]
+
+      args
+    end
+
+    # Resolve arguments for daily historical data
+    def self.resolve_daily_historical_args(args)
+      # First, resolve symbol to security_id and get instrument type
+      if args[:symbol] && !args[:security_id]
+        begin
+          require_relative "options/complete_integration"
+          system = Options::CompleteIntegration.setup_system(dry_run: true)
+          registry = system[:registry]
+
+          # Call instrument.find to get security_id and instrument type
+          find_result = registry.call("dhan.instrument.find", {
+                                        symbol: args[:symbol],
+                                        exchange_segment: args[:exchange_segment]
+                                      })
+
+          if find_result[:status] == "success" && find_result[:result]
+            result = find_result[:result]
+            args[:security_id] = (result[:security_id] || result["security_id"]).to_s
+            args[:instrument] = result[:instrument_type] || result["instrument_type"] || "INDEX"
+            args.delete(:symbol) # Remove symbol, use security_id instead
+          end
+        rescue StandardError => e
+          # If resolution fails, use defaults
+          args[:instrument] = args[:exchange_segment] == "IDX_I" ? "INDEX" : "EQUITY"
+        end
+      end
+
       # Set up dates if not provided
       today = Date.today
 
@@ -754,23 +833,20 @@ module Vyapari
         last_trading_day = last_trading_day.prev_day while last_trading_day.saturday? || last_trading_day.sunday?
       end
 
-      # Set default dates following production-grade rules
-      # LIVE mode: from_date = last trading day before to_date, to_date = today (if trading day) or last trading day
+      # Set default dates for daily candles
+      # to_date: today (if trading day) or last trading day
       if args[:to_date].nil? || args[:to_date].to_s.empty?
-        # Use today if it's a trading day, otherwise use last trading day
         to_date = today.saturday? || today.sunday? ? last_trading_day : today
         args[:to_date] = to_date.strftime("%Y-%m-%d")
       end
 
+      # from_date: default to 30 days ago (or 30 trading days)
       if args[:from_date].nil? || args[:from_date].to_s.empty?
-        # Calculate from_date based on interval to ensure enough candles for indicators
-        interval = (args[:interval] || args["interval"] || "5").to_i
-        from_dt = calculate_from_date_for_interval(args[:to_date], interval)
+        from_dt = last_trading_day - 30
+        # Ensure from_date is a trading day
+        from_dt = from_dt.prev_day while from_dt.saturday? || from_dt.sunday?
         args[:from_date] = from_dt.strftime("%Y-%m-%d")
       end
-
-      # Ensure interval is a string
-      args[:interval] = args[:interval].to_s if args[:interval]
 
       args
     end
@@ -867,6 +943,35 @@ module Vyapari
 
         tool_result
       end
+    end
+
+    # Sanitize tool arguments to remove HTML/XML comments, malformed keys, and invalid values
+    def self.sanitize_tool_args(args)
+      return {} unless args.is_a?(Hash)
+
+      sanitized = {}
+      args.each do |key, value|
+        # Skip keys that look like HTML/XML comments or malformed
+        next if key.to_s.match?(/^[<>!]|<!--|-->|=>/)
+        next if key.to_s.length > 100 # Skip suspiciously long keys
+
+        # Skip values that are HTML/XML comments or contain malformed content
+        next if value.is_a?(String) && (value.match?(/<!--|-->|=>/) || value.length > 1000)
+
+        # Only keep valid types: String, Integer, Numeric, Boolean, nil, Hash, Array
+        next unless [String, Integer, Numeric, TrueClass, FalseClass, NilClass, Hash, Array].any? { |t| value.is_a?(t) }
+
+        # Recursively sanitize nested hashes
+        if value.is_a?(Hash)
+          value = sanitize_tool_args(value)
+        end
+
+        # Convert symbol keys to strings for consistency
+        clean_key = key.is_a?(Symbol) ? key.to_s : key.to_s
+        sanitized[clean_key] = value
+      end
+
+      sanitized
     end
   end
 end

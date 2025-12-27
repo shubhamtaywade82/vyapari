@@ -222,11 +222,8 @@ module Ollama
             errors << "LIVE mode: from_date (#{from_date_str}) #{trading_validation_from[:error]}"
           end
 
-          # to_date MUST be a trading day (if not today, but today should always be checked)
-          trading_validation_to = Vyapari::TradingCalendar.validate_trading_day(to_date)
-          unless trading_validation_to[:valid]
-            errors << "LIVE mode: to_date (#{to_date_str}) #{trading_validation_to[:error]}"
-          end
+          # NOTE: to_date doesn't need to be a trading day (it's just the end of the range)
+          # Only from_date must be a trading day to ensure we get actual trading data
         end
 
         # Validate HISTORICAL mode constraints
@@ -236,16 +233,13 @@ module Ollama
             errors << "HISTORICAL mode: from_date (#{from_date_str}) cannot be after to_date (#{to_date_str})"
           end
 
-          # Both dates MUST be trading days
+          # from_date MUST be a trading day (to_date doesn't need to be)
           trading_validation_from = Vyapari::TradingCalendar.validate_trading_day(from_date)
           unless trading_validation_from[:valid]
             errors << "HISTORICAL mode: from_date (#{from_date_str}) #{trading_validation_from[:error]}"
           end
 
-          trading_validation_to = Vyapari::TradingCalendar.validate_trading_day(to_date)
-          unless trading_validation_to[:valid]
-            errors << "HISTORICAL mode: to_date (#{to_date_str}) #{trading_validation_to[:error]}"
-          end
+          # NOTE: to_date doesn't need to be a trading day (it's just the end of the range)
         end
 
         errors

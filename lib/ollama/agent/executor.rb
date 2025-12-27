@@ -107,12 +107,13 @@ module Ollama
 
       # Execute multiple tool calls (sequential by default)
       # @param steps [Array<Hash>] Array of {tool:, args:} hashes
+      # @param context [Hash] Execution context (optional, for dependency tracking)
       # @return [Array<Hash>] Array of execution results
-      def execute_many(steps)
+      def execute_many(steps, context: {})
         if @max_parallel > 1 && steps.length > 1
-          execute_parallel(steps)
+          execute_parallel(steps, context: context)
         else
-          execute_sequential(steps)
+          execute_sequential(steps, context: context)
         end
       end
 
@@ -121,6 +122,10 @@ module Ollama
       def execution_log
         @execution_log.dup
       end
+
+      # Get registry (for context building)
+      # @return [ToolRegistry] Tool registry
+      attr_reader :registry
 
       private
 
@@ -136,12 +141,89 @@ module Ollama
       end
 
       def execute_sequential(steps, context: {})
-        steps.map do |step|
-          execute(
-            tool_name: step["tool"] || step[:tool],
-            args: step["args"] || step[:args] || {},
-            context: context
+        # Build context as hash if it's not already
+        exec_context = context.is_a?(Hash) ? context.dup : { tool_calls: {}, results: [] }
+        exec_context[:tool_calls] ||= {}
+        exec_context[:results] ||= []
+
+        results = steps.map do |step|
+          tool_name = step["tool"] || step[:tool]
+          tool_args = step["args"] || step[:args] || {}
+
+          result = execute(
+            tool_name: tool_name,
+            args: tool_args,
+            context: exec_context
           )
+
+          # Update context after each execution
+          update_context_from_result(exec_context, tool_name, result)
+
+          result
+        end
+
+        results
+      end
+
+      # Update context with tool result (for sequential execution)
+      def update_context_from_result(context, tool_name, result)
+        return unless context.is_a?(Hash)
+
+        # Track tool call
+        context[:tool_calls] ||= {}
+        context[:tool_calls][tool_name] = (context[:tool_calls][tool_name] || 0) + 1
+        context[:results] ||= []
+        context[:results] << result
+
+        # Extract outputs based on tool descriptor's "produces" field
+        return unless @registry && result && result[:status] == "success"
+
+        descriptor = @registry.descriptor(tool_name)
+        return unless descriptor&.dependencies
+
+        produces = descriptor.dependencies["produces"] || []
+        return if produces.empty?
+
+        tool_result = result[:result] || result["result"] || {}
+
+        produces.each do |output_key|
+          case output_key
+          when "instrument"
+            if tool_result.is_a?(Hash)
+              context[:instrument] = tool_result
+            elsif result.is_a?(Hash) && result[:result]
+              context[:instrument] = result[:result]
+            end
+          when "expiry_list"
+            if tool_result.is_a?(Array)
+              context[:expiry_list] = tool_result
+            elsif tool_result.is_a?(Hash)
+              context[:expiry_list] = tool_result[:expiries] || tool_result["expiries"] ||
+                                      tool_result[:data] || tool_result["data"] || []
+            elsif result.is_a?(Hash) && result[:result].is_a?(Array)
+              context[:expiry_list] = result[:result]
+            end
+          when "intraday_candles"
+            context[:intraday_candles] = tool_result[:candles] || tool_result["candles"] || tool_result
+          when "daily_candles"
+            context[:daily_candles] = tool_result[:candles] || tool_result["candles"] || tool_result
+          when "option_chain_snapshot"
+            context[:option_chain_snapshot] = tool_result
+          when "available_capital"
+            context[:available_capital] = tool_result[:available] || tool_result["available"] || tool_result
+          when "open_positions"
+            context[:open_positions] = tool_result[:positions] || tool_result["positions"] || tool_result
+          when "holdings"
+            context[:holdings] = tool_result[:holdings] || tool_result["holdings"] || tool_result
+          when "orders"
+            context[:orders] = tool_result[:orders] || tool_result["orders"] || tool_result
+          when "trades"
+            context[:trades] = tool_result[:trades] || tool_result["trades"] || tool_result
+          when "order_id"
+            context[:order_id] = tool_result[:order_id] || tool_result["order_id"]
+          else
+            context[output_key.to_sym] = tool_result
+          end
         end
       end
 

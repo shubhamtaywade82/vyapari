@@ -492,15 +492,8 @@ module Ollama
                   }
                 end
 
-                trading_validation_to = Vyapari::TradingCalendar.validate_trading_day(to_dt)
-                unless trading_validation_to[:valid]
-                  return {
-                    error: "to_date (#{to_date}) #{trading_validation_to[:error]}",
-                    candles: [],
-                    interval: interval,
-                    complete: false
-                  }
-                end
+                # Note: to_date doesn't need to be a trading day (it's just the end of the range)
+                # Only from_date must be a trading day to ensure we get actual trading data
 
                 # Check LIVE mode constraint: from_date must be before to_date
                 if from_dt >= to_dt
@@ -951,7 +944,8 @@ module Ollama
                 derived_inputs: {
                   "underlying_scrip" => "instrument.security_id",
                   "underlying_seg" => "instrument.exchange_segment"
-                }
+                },
+                produces: ["expiry_list"]
               },
               inputs: {
                 type: "object",
