@@ -9,6 +9,8 @@ require_relative "agent_prompts"
 require_relative "../../ollama/agent/tools/dhan_complete"
 require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
+require_relative "../../tools/tool_registry_adapter"
+require_relative "../../tools/enhanced_dhan_tools"
 
 module Vyapari
   module Options
@@ -19,9 +21,20 @@ module Vyapari
         # 1. Create state machine
         state_machine = TradingStateMachine.new
 
-        # 2. Create tool registry with all DhanHQ tools
+        # 2. Create tool registry with enhanced DhanHQ tools
         registry = Ollama::Agent::ToolRegistry.new
-        Ollama::Agent::Tools::DhanComplete.register_all(registry: registry)
+
+        # Register enhanced tools (preferred - has examples and better metadata)
+        begin
+          Vyapari::Tools::ToolRegistryAdapter.register_enhanced_tools(
+            registry: registry,
+            dhan_client: nil # Pass actual dhan_client if available
+          )
+        rescue StandardError => e
+          # Fallback to legacy DhanComplete if enhanced tools fail
+          @logger&.warn("Enhanced tools registration failed, using legacy: #{e.message}")
+          Ollama::Agent::Tools::DhanComplete.register_all(registry: registry)
+        end
 
         # 3. Create safety gate
         safety_gate = Ollama::Agent::SafetyGate.new(

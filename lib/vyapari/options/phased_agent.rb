@@ -6,6 +6,7 @@ require_relative "../../ollama/agent/tool_registry"
 require_relative "../../ollama/agent/safety_gate"
 require_relative "../../ollama/agent/iteration_limits"
 require_relative "checklist_guard"
+require_relative "../tools/tool_registry_adapter"
 
 module Vyapari
   module Options
@@ -251,6 +252,26 @@ module Vyapari
       def run_validation_phase(trade_plan)
         @logger.info "✅ PHASE 2: Plan Validation (max 3 iterations)"
 
+        # Use RiskCalculator to convert SL/TP logic and calculate lot size (deterministic pre-check)
+        context = extract_validation_context(trade_plan)
+        risk_calc = create_risk_calculator(context)
+
+        # Pre-validate using RiskCalculator (deterministic, no LLM)
+        risk_validation = pre_validate_with_risk_calculator(trade_plan, risk_calc, context)
+        unless risk_validation[:passed]
+          @logger.error "❌ Risk validation failed: #{risk_validation[:reason]}"
+          return {
+            phase: :validation,
+            status: "rejected",
+            reason: risk_validation[:reason],
+            iterations: 0,
+            max_iterations: Ollama::Agent::IterationLimits::VALIDATION,
+            context: [],
+            trace: [],
+            duration: 0
+          }
+        end
+
         # Create validation-specific registry
         validation_registry = create_validation_registry
 
@@ -263,8 +284,8 @@ module Vyapari
           timeout: 10
         )
 
-        # Build validation prompt
-        validation_prompt = build_validation_prompt(trade_plan)
+        # Build validation prompt with risk context
+        validation_prompt = build_validation_prompt(trade_plan, risk_context: risk_validation)
 
         # Run agent
         result = validation_agent.loop(task: validation_prompt)
@@ -383,23 +404,61 @@ module Vyapari
         target_registry
       end
 
-      # Build analysis prompt
+      # Build analysis prompt with enhanced tool descriptors
       def build_analysis_prompt(task)
         require_relative "agent_prompts"
-        AgentPrompts.agent_a_system_prompt + "\n\nTASK:\n#{task}"
+
+        # Get base prompt
+        base_prompt = AgentPrompts.agent_a_system_prompt
+
+        # Add tool descriptors if registry available
+        if @registry && @registry.respond_to?(:descriptors)
+          tools_json = @registry.descriptors_json
+          tools_section = "\n\nAVAILABLE TOOLS:\n#{tools_json}\n"
+          base_prompt += tools_section
+        end
+
+        base_prompt + "\n\nTASK:\n#{task}"
       end
 
-      # Build validation prompt
-      def build_validation_prompt(trade_plan)
+      # Build validation prompt with enhanced tool descriptors
+      def build_validation_prompt(trade_plan, risk_context: nil)
         require_relative "agent_prompts"
-        AgentPrompts.agent_b_system_prompt + "\n\nTRADE PLAN TO VALIDATE:\n#{JSON.pretty_generate(trade_plan)}"
+
+        # Get base prompt
+        base_prompt = AgentPrompts.agent_b_system_prompt
+
+        # Add tool descriptors if registry available
+        if @registry && @registry.respond_to?(:descriptors)
+          tools_json = @registry.descriptors_json
+          tools_section = "\n\nAVAILABLE TOOLS:\n#{tools_json}\n"
+          base_prompt += tools_section
+        end
+
+        # Add risk context if available
+        if risk_context
+          base_prompt += "\n\nRISK CALCULATION CONTEXT:\n#{JSON.pretty_generate(risk_context)}\n"
+        end
+
+        base_prompt + "\n\nTRADE PLAN TO VALIDATE:\n#{JSON.pretty_generate(trade_plan)}"
       end
 
-      # Build execution prompt
+      # Build execution prompt with enhanced tool descriptors
       def build_execution_prompt(executable_plan)
         require_relative "agent_prompts"
+
+        # Get base prompt
+        base_prompt = AgentPrompts.agent_c_system_prompt
+
+        # Add tool descriptors if registry available
+        if @registry && @registry.respond_to?(:descriptors)
+          tools_json = @registry.descriptors_json
+          tools_section = "\n\nAVAILABLE TOOLS:\n#{tools_json}\n"
+          base_prompt += tools_section
+        end
+
         exec_plan = executable_plan[:execution_plan] || executable_plan["execution_plan"]
-        AgentPrompts.agent_c_system_prompt + "\n\nEXECUTABLE PLAN:\n#{JSON.pretty_generate(exec_plan)}"
+        base_prompt + "\n\nEXECUTABLE PLAN:\n#{JSON.pretty_generate(exec_plan)}"
       end
 
       # Extract trade plan from analysis result
@@ -434,6 +493,55 @@ module Vyapari
         end
 
         nil
+      end
+
+      # Extract validation context for risk calculation
+      def extract_validation_context(trade_plan)
+        {
+          instrument: trade_plan[:instrument] || trade_plan["instrument"] || "NIFTY",
+          account_balance: ENV.fetch("ACCOUNT_BALANCE", "100000").to_f,
+          max_risk_percent: ENV.fetch("MAX_RISK_PERCENT", "1.0").to_f
+        }
+      end
+
+      # Create risk calculator instance
+      def create_risk_calculator(context)
+        require_relative "risk_calculator"
+        RiskCalculator.new(
+          account_balance: context[:account_balance],
+          max_risk_percent: context[:max_risk_percent],
+          instrument: context[:instrument]
+        )
+      end
+
+      # Pre-validate trade plan using RiskCalculator (deterministic)
+      def pre_validate_with_risk_calculator(trade_plan, risk_calc, context)
+        # Get option LTP (would need to fetch from market)
+        option_ltp = context[:option_ltp] || 100.0 # Placeholder
+
+        # Validate trade plan
+        validation = risk_calc.validate_trade_plan(
+          trade_plan: trade_plan,
+          option_ltp: option_ltp,
+          funds_available: context[:account_balance] * 0.85 # Assume 85% available
+        )
+
+        if validation[:status] == :approved
+          {
+            passed: true,
+            sl_price: validation[:sl_price],
+            tp_partial: validation[:tp_partial],
+            tp_final: validation[:tp_final],
+            lots: validation[:lots],
+            quantity: validation[:quantity],
+            total_risk: validation[:total_risk]
+          }
+        else
+          {
+            passed: false,
+            reason: validation[:reason] || "Risk validation failed"
+          }
+        end
       end
 
       # Extract executable plan from validation result
