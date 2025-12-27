@@ -26,8 +26,13 @@ module Vyapari
         - Check `dependencies.required_guards` - safety guards must pass first
         - Check `dependencies.forbidden_after` - tool cannot be called after these events
         - Check `dependencies.max_calls_per_trade` - limit on how many times tool can be called
+        - Check `dependencies.derived_inputs` - these inputs are AUTOMATICALLY computed from previous tool outputs
+        - **CRITICAL**: For `derived_inputs`, you do NOT need to provide these values - the system computes them automatically
+        - **CRITICAL**: Never guess derived values (like nearest expiry, lot size, tick size) - let the system derive them
         - If dependencies are unmet, return NO_ACTION (do NOT call the tool)
         - Dependency violations will abort execution automatically
+        - You MUST request prerequisite tools before dependent tools
+        - If dependencies are missing, return a plan to resolve them (call required_tools first)
 
         RULES:
         - Use tools ONLY when required

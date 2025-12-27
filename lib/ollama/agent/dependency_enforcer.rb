@@ -74,6 +74,36 @@ module Ollama
         }
       end
 
+      # Resolve derived inputs from context
+      # @param tool_name [String] Tool name
+      # @param args [Hash] Original tool arguments (may be empty)
+      # @param context [Hash] Execution context with previous tool outputs
+      # @return [Hash] Resolved arguments with derived inputs filled in
+      def resolve_derived_inputs(tool_name:, args: {}, context: {})
+        descriptor = @registry&.descriptor(tool_name)
+        return args unless descriptor&.dependencies
+
+        deps = descriptor.dependencies
+        derived = deps["derived_inputs"] || {}
+        return args if derived.empty?
+
+        resolved_args = args.dup
+
+        derived.each do |arg_name, path|
+          # Skip if already provided explicitly
+          next if resolved_args.key?(arg_name.to_sym) || resolved_args.key?(arg_name.to_s)
+
+          # Resolve from context using path (supports dot notation and array indices)
+          value = dig_context(context, path)
+          if value
+            resolved_args[arg_name.to_sym] = value
+            resolved_args[arg_name.to_s] = value # Support both symbol and string keys
+          end
+        end
+
+        resolved_args
+      end
+
       private
 
       # Check if context has a key (supports nested keys like "validated_trade_plan.quantity")
@@ -89,6 +119,35 @@ module Ollama
         end
 
         true
+      end
+
+      # Dig into context using path notation (supports dot notation and array indices)
+      # Examples:
+      #   "instrument.security_id" → context[:instrument][:security_id]
+      #   "expiry_list[0]" → context[:expiry_list][0]
+      #   "validated_trade_plan.quantity" → context[:validated_trade_plan][:quantity]
+      def dig_context(context, path)
+        return nil unless context.is_a?(Hash)
+
+        # Split by dots and brackets, handling both "expiry_list[0]" and "instrument.security_id"
+        parts = path.to_s.split(/\.|\[|\]/).reject(&:empty?)
+        current = context
+
+        parts.each do |part|
+          return nil unless current
+
+          # Handle array index
+          if part.match?(/^\d+$/)
+            return nil unless current.is_a?(Array)
+
+            current = current[part.to_i]
+          else
+            # Handle hash key (try both symbol and string)
+            current = current[part.to_sym] || current[part.to_s]
+          end
+        end
+
+        current
       end
     end
   end

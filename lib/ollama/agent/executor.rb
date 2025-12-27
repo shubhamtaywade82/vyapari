@@ -39,6 +39,9 @@ module Ollama
                 dependency_errors: dep_check[:errors]
               }
             end
+
+            # ①.5 Resolve derived inputs from context (after validation, before execution)
+            args = @dependency_enforcer.resolve_derived_inputs(tool_name: tool_name, args: args, context: context)
           end
 
           # ② Safety gate check

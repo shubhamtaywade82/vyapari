@@ -46,7 +46,7 @@ module Ollama
       end
 
       # Convert to JSON string for prompt injection
-      def to_json
+      def to_json(*_args)
         require "json"
         JSON.generate(to_schema)
       end
@@ -59,9 +59,7 @@ module Ollama
         # Check required fields
         if @inputs["required"]
           @inputs["required"].each do |field|
-            unless args.key?(field.to_s) || args.key?(field.to_sym)
-              errors << "Missing required field: #{field}"
-            end
+            errors << "Missing required field: #{field}" unless args.key?(field.to_s) || args.key?(field.to_sym)
           end
         end
 
@@ -115,7 +113,8 @@ module Ollama
           "required_states" => Array(normalized["required_states"] || normalized[:required_states]),
           "required_guards" => Array(normalized["required_guards"] || normalized[:required_guards]),
           "forbidden_after" => Array(normalized["forbidden_after"] || normalized[:forbidden_after]),
-          "max_calls_per_trade" => normalized["max_calls_per_trade"] || normalized[:max_calls_per_trade]
+          "max_calls_per_trade" => normalized["max_calls_per_trade"] || normalized[:max_calls_per_trade],
+          "derived_inputs" => normalized["derived_inputs"] || normalized[:derived_inputs] || {}
         }
       end
 
@@ -156,18 +155,16 @@ module Ollama
         # Enum validation
         if schema["enum"] || schema[:enum]
           enum_values = schema["enum"] || schema[:enum]
-          unless enum_values.include?(value)
-            errors << "#{field_name}: must be one of #{enum_values.join(", ")}"
-          end
+          errors << "#{field_name}: must be one of #{enum_values.join(", ")}" unless enum_values.include?(value)
         end
 
         # Min/Max validation
-        if schema["minimum"] && value.is_a?(Numeric)
-          errors << "#{field_name}: must be >= #{schema["minimum"]}" if value < schema["minimum"]
+        if schema["minimum"] && value.is_a?(Numeric) && (value < schema["minimum"])
+          errors << "#{field_name}: must be >= #{schema["minimum"]}"
         end
 
-        if schema["maximum"] && value.is_a?(Numeric)
-          errors << "#{field_name}: must be <= #{schema["maximum"]}" if value > schema["maximum"]
+        if schema["maximum"] && value.is_a?(Numeric) && (value > schema["maximum"])
+          errors << "#{field_name}: must be <= #{schema["maximum"]}"
         end
 
         errors
@@ -175,4 +172,3 @@ module Ollama
     end
   end
 end
-

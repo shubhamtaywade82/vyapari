@@ -553,20 +553,36 @@ module Ollama
               when_to_use: "Strike selection and IV analysis before entry",
               when_not_to_use: "After entry execution",
               risk_level: :none,
+              dependencies: {
+                required_tools: [
+                  "dhan.instrument.find",
+                  "dhan.option.expiries"
+                ],
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment",
+                  "expiry_list"
+                ],
+                derived_inputs: {
+                  "underlying_scrip" => "instrument.security_id",
+                  "underlying_seg" => "instrument.exchange_segment",
+                  "expiry" => "expiry_list[0]"
+                }
+              },
               inputs: {
                 type: "object",
                 properties: {
                   underlying_scrip: {
                     type: "integer",
-                    description: "Underlying security_id (integer, e.g., 13 for NIFTY). Must be an integer."
+                    description: "Underlying security_id (integer, e.g., 13 for NIFTY). Automatically derived from instrument.find if not provided."
                   },
                   underlying_seg: {
                     type: "string",
-                    description: "Underlying segment (e.g., 'IDX_I' for indices)"
+                    description: "Underlying segment (e.g., 'IDX_I' for indices). Automatically derived from instrument.find if not provided."
                   },
                   expiry: {
                     type: "string",
-                    description: "Expiry date (YYYY-MM-DD format). Optional - if not provided, will be automatically resolved from expiry list using nearest expiry >= today."
+                    description: "Expiry date (YYYY-MM-DD format). Automatically derived from expiry_list[0] (nearest expiry) if not provided."
                   }
                 },
                 required: %w[underlying_scrip underlying_seg]
@@ -582,7 +598,10 @@ module Ollama
                 }
               },
               side_effects: [],
-              safety_rules: []
+              safety_rules: [
+                "Only nearest expiry allowed for intraday",
+                "Do not refetch chain repeatedly in same iteration"
+              ]
             },
             handler: lambda { |args|
               begin
@@ -857,6 +876,19 @@ module Ollama
               when_to_use: "Before fetching option chain to select expiry",
               when_not_to_use: "If expiry already known",
               risk_level: :none,
+              dependencies: {
+                required_tools: [
+                  "dhan.instrument.find"
+                ],
+                required_outputs: [
+                  "instrument.security_id",
+                  "instrument.exchange_segment"
+                ],
+                derived_inputs: {
+                  "underlying_scrip" => "instrument.security_id",
+                  "underlying_seg" => "instrument.exchange_segment"
+                }
+              },
               inputs: {
                 type: "object",
                 properties: {
