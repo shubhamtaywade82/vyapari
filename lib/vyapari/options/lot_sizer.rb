@@ -24,9 +24,7 @@ module Vyapari
         base_lots = calculate_base_lots
 
         # Apply daily loss cap constraint
-        final_lots = apply_loss_cap_constraint(base_lots)
-
-        final_lots
+        apply_loss_cap_constraint(base_lots)
       end
 
       private
@@ -69,4 +67,3 @@ module Vyapari
     end
   end
 end
-

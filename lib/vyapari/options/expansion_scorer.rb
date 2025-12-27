@@ -60,7 +60,7 @@ module Vyapari
           20
         else
           # Use quality from structure analyzer if available
-          (@structure[:quality] || 0)
+          @structure[:quality] || 0
         end
       end
 
@@ -198,4 +198,3 @@ module Vyapari
     end
   end
 end
-

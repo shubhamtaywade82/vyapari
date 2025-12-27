@@ -31,6 +31,9 @@ module Vyapari
   end
 end
 
+# Load Ollama module
+require_relative "ollama"
+
 # Dynamically require all Ruby files in lib/vyapari
 vyapari_dir = File.join(__dir__, "vyapari")
 files = Dir.glob(File.join(vyapari_dir, "**", "*.rb"))
