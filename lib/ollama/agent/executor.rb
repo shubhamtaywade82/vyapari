@@ -48,6 +48,7 @@ module Ollama
           end
 
           result = @registry.call(tool_name, args)
+
           log_execution(tool_name, args, result[:result], result[:status], result[:error])
           result
         else

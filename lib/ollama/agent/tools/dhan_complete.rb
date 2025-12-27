@@ -105,11 +105,44 @@ module Ollama
               begin
                 # Try MarketFeed.ltp if available
                 if defined?(DhanHQ::Models::MarketFeed) && DhanHQ::Models::MarketFeed.respond_to?(:ltp)
-                  result = DhanHQ::Models::MarketFeed.ltp(
-                    exchange_segment: args[:exchange_segment] || args["exchange_segment"],
-                    security_id: args[:security_id] || args["security_id"]
-                  )
-                  { ltp: result[:ltp] || result["ltp"] || 0, timestamp: Time.now.iso8601 }
+                  exchange_seg = args[:exchange_segment] || args["exchange_segment"]
+                  sec_id = args[:security_id] || args["security_id"]
+
+                  # API signature: MarketFeed.ltp("IDX_I" => [25])
+                  # Returns: {"data"=>{"IDX_I"=>{"25"=>{"last_price"=>59011.35}}, "status"=>"success"}
+                  # Build params like InstrumentHelpers.build_market_feed_params
+                  params = { exchange_seg => [sec_id.to_i] }
+                  result = DhanHQ::Models::MarketFeed.ltp(params)
+
+                  # Extract last_price from nested response structure (matching InstrumentHelpers.ltp logic)
+                  # Response format: {"data" => {"EXCHANGE_SEGMENT" => {"security_id" => {"last_price" => value}}}, "status" => "success"}
+                  data = result[:data] || result["data"]
+
+                  unless data
+                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data in response: #{result.inspect[0..200]}" }
+                  end
+
+                  # Try both symbol and string keys for exchange_segment
+                  segment_data = data[exchange_seg] || data[exchange_seg.to_sym]
+
+                  unless segment_data
+                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data for exchange_segment #{exchange_seg}: #{data.keys.inspect}" }
+                  end
+
+                  # Try both string and integer keys for security_id
+                  security_data = segment_data[sec_id] || segment_data[sec_id.to_s] || segment_data[sec_id.to_i] || segment_data[sec_id.to_i.to_s]
+
+                  unless security_data
+                    return { ltp: 0, timestamp: Time.now.iso8601, error: "No data for security_id #{sec_id}: #{segment_data.keys.inspect}" }
+                  end
+
+                  ltp_value = security_data[:last_price] || security_data["last_price"]
+
+                  if ltp_value && ltp_value > 0
+                    { ltp: ltp_value.to_f, timestamp: Time.now.iso8601 }
+                  else
+                    { ltp: 0, timestamp: Time.now.iso8601, error: "last_price not found or invalid: #{security_data.inspect}" }
+                  end
                 else
                   { ltp: 0, timestamp: Time.now.iso8601, error: "LTP method not available" }
                 end
