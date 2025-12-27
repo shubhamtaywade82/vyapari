@@ -17,9 +17,10 @@ module Ollama
       # @param task [String] Task description
       # @param schema [Hash] JSON schema for plan structure
       # @param context [Hash, nil] Additional context to include
+      # @param tool_descriptors [Array<Hash>, nil] Tool descriptors for prompt
       # @return [Hash] Parsed plan matching schema
-      def plan(task:, schema:, context: nil)
-        prompt = build_prompt(task, context)
+      def plan(task:, schema:, context: nil, tool_descriptors: nil)
+        prompt = build_prompt(task, context, tool_descriptors)
         options = { temperature: @temperature }
 
         response = @client.generate(
@@ -37,11 +38,18 @@ module Ollama
 
       private
 
-      def build_prompt(task, context)
+      def build_prompt(task, context, tool_descriptors)
         prompt = <<~PROMPT
-          You are a planning engine.
-          Output ONLY valid JSON matching the provided schema.
-          No explanation. No markdown. No code.
+          You are an execution planner.
+
+          RULES:
+          - You MUST choose tools only when necessary
+          - Never hallucinate tool outputs
+          - Never invent arguments
+          - Return tool calls in JSON only
+          - Follow tool schemas exactly
+
+          #{tool_descriptors ? build_tools_section(tool_descriptors) : ""}
 
           TASK:
           #{task}
@@ -49,7 +57,30 @@ module Ollama
 
         prompt += "\nCONTEXT:\n#{JSON.dump(context)}\n" if context
 
+        prompt += <<~PROMPT
+
+          You must output one of:
+          1. A tool call (action: "tool_call", tool_name: "...", tool_args: {...})
+          2. A final answer (action: "final", final_output: "...")
+
+          Output ONLY valid JSON matching the provided schema.
+          No explanation. No markdown. No code.
+        PROMPT
+
         prompt
+      end
+
+      def build_tools_section(tool_descriptors)
+        require "json"
+        tools_json = JSON.pretty_generate(tool_descriptors)
+
+        <<~TOOLS
+          AVAILABLE TOOLS:
+          Each tool has a strict input/output schema.
+          You MUST use tools exactly as described.
+
+          #{tools_json}
+        TOOLS
       end
 
       def parse_response(response)

@@ -10,6 +10,13 @@ module Ollama
     DEFAULT_PLAN_SCHEMA = {
       "type" => "object",
       "properties" => {
+        "action" => {
+          "type" => "string",
+          "enum" => %w[tool_call final]
+        },
+        "tool_name" => { "type" => "string" },
+        "tool_args" => { "type" => "object" },
+        "final_output" => { "type" => "string" },
         "steps" => {
           "type" => "array",
           "items" => {
@@ -23,13 +30,15 @@ module Ollama
         },
         "stop_reason" => { "type" => "string" }
       },
-      "required" => ["steps"]
+      "required" => ["action"]
     }.freeze
 
-    def initialize(client: nil, model: DEFAULT_MODEL, tools: {}, max_iterations: 3, timeout: 30)
+    def initialize(client: nil, model: DEFAULT_MODEL, tools: {}, registry: nil, max_iterations: 3, timeout: 30,
+                   safety_gate: nil)
       @client = client || Client.new
       @model = model
-      @tools = tools
+      @tools = tools # Legacy support
+      @registry = registry
       @max_iterations = max_iterations
       @timeout = timeout
 
@@ -37,7 +46,7 @@ module Ollama
       load_agent_components
 
       @planner = Agent::Planner.new(client: @client, model: @model)
-      @executor = Agent::Executor.new(tools: @tools)
+      @executor = Agent::Executor.new(registry: @registry, tools: @tools, safety_gate: safety_gate)
       @verifier = Agent::Verifier.new(schema: DEFAULT_PLAN_SCHEMA)
       @loop = Agent::Loop.new(
         planner: @planner,
@@ -55,7 +64,8 @@ module Ollama
     # @return [Hash] Generated plan
     def plan(task:, schema: nil, context: nil)
       plan_schema = schema || DEFAULT_PLAN_SCHEMA
-      @planner.plan(task: task, schema: plan_schema, context: context)
+      tool_descriptors = @registry ? @registry.descriptors : nil
+      @planner.plan(task: task, schema: plan_schema, context: context, tool_descriptors: tool_descriptors)
     end
 
     # Execute a single tool call
@@ -124,8 +134,15 @@ module Ollama
       require_relative "agent/executor"
       require_relative "agent/verifier"
       require_relative "agent/loop"
+      require_relative "agent/tool_descriptor"
+      require_relative "agent/tool_registry"
+      require_relative "agent/safety_gate"
       @components_loaded = true
     end
+
+    # Get the tool registry (if initialized)
+    # @return [ToolRegistry, nil]
+    attr_reader :registry
 
     def build_default_final_prompt(context)
       <<~PROMPT

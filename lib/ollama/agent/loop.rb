@@ -55,17 +55,39 @@ module Ollama
             return build_result(context, trace, "verification_failed", verification[:errors].join(", "))
           end
 
+          # Check action type (new format) or legacy steps format
+          action = plan["action"] || plan[:action]
+
+          if action == "final"
+            final_output = plan["final_output"] || plan[:final_output] || "Task completed"
+            return build_result(context, trace, "completed", final_output)
+          end
+
+          # Handle tool_call action (new format)
+          if action == "tool_call"
+            tool_name = plan["tool_name"] || plan[:tool_name]
+            tool_args = plan["tool_args"] || plan[:tool_args] || {}
+
+            return build_result(context, trace, "error", "tool_call action missing tool_name") unless tool_name
+
+            result = @executor.execute(tool_name: tool_name, args: tool_args, context: context)
+            context << result
+            trace << { iteration: iteration, tool_call: { tool: tool_name, args: tool_args }, result: result,
+                       timestamp: Time.now }
+
+          elsif action.nil? || action.empty?
+            # Legacy: support steps array format
+            steps = plan["steps"] || plan[:steps] || []
+            return build_result(context, trace, "completed", "No steps to execute") if steps.empty?
+
+            results = @executor.execute_many(steps, context: context)
+            context.concat(results)
+            trace << { iteration: iteration, results: results, timestamp: Time.now }
+          end
+
           # Check for stop condition
           stop_reason = plan["stop_reason"] || plan[:stop_reason]
           return build_result(context, trace, "completed", stop_reason) if stop_reason && !stop_reason.empty?
-
-          # Execute plan steps
-          steps = plan["steps"] || plan[:steps] || []
-          return build_result(context, trace, "completed", "No steps to execute") if steps.empty?
-
-          results = @executor.execute_many(steps)
-          context.concat(results)
-          trace << { iteration: iteration, results: results, timestamp: Time.now }
 
           # Check if we should continue
           return build_result(context, trace, "completed", "Stop condition met") if should_stop?(results)
