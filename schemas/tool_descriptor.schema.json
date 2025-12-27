@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ToolDescriptor",
+  "type": "object",
+  "required": [
+    "name",
+    "category",
+    "description",
+    "purpose",
+    "when_to_use",
+    "when_not_to_use",
+    "inputs",
+    "outputs",
+    "side_effects",
+    "safety_rules",
+    "examples"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.]+$",
+      "description": "Unique tool identifier (lowercase, dots, underscores only)"
+    },
+    "category": {
+      "type": "string",
+      "description": "Logical grouping (market.read, options.read, trade.execution, risk, fs, exec, etc.)"
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of what the tool does"
+    },
+    "purpose": {
+      "type": "string",
+      "description": "Why this tool exists and what problem it solves"
+    },
+    "when_to_use": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "List of scenarios when this tool should be used"
+    },
+    "when_not_to_use": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of scenarios when this tool should NOT be used"
+    },
+    "inputs": {
+      "type": "object",
+      "description": "JSON Schema describing tool input parameters",
+      "additionalProperties": true
+    },
+    "outputs": {
+      "type": "object",
+      "description": "JSON Schema describing tool output structure",
+      "additionalProperties": true
+    },
+    "side_effects": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of side effects (e.g., 'Places REAL money order')"
+    },
+    "safety_rules": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of safety rules that must be followed"
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Default values for optional parameters"
+    },
+    "dry_run_behavior": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "returns": { "type": "object", "additionalProperties": true }
+      },
+      "description": "Behavior when dry_run mode is enabled"
+    },
+    "examples": {
+      "type": "object",
+      "required": ["valid", "invalid"],
+      "properties": {
+        "valid": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["input", "comment"],
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "comment": {
+                "type": "string",
+                "description": "Explanation of why this is a valid example"
+              }
+            }
+          },
+          "description": "Array of valid usage examples"
+        },
+        "invalid": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["input", "reason"],
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "reason": {
+                "type": "string",
+                "description": "Explanation of why this is invalid"
+              }
+            }
+          },
+          "description": "Array of invalid usage examples (anti-patterns)"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
+
