@@ -217,7 +217,6 @@ module Ollama
           end
 
           # from_date MUST be a trading day
-          require_relative "../../vyapari/trading_calendar"
           trading_validation_from = Vyapari::TradingCalendar.validate_trading_day(from_date)
           unless trading_validation_from[:valid]
             errors << "LIVE mode: from_date (#{from_date_str}) #{trading_validation_from[:error]}"
@@ -238,7 +237,6 @@ module Ollama
           end
 
           # Both dates MUST be trading days
-          require_relative "../../vyapari/trading_calendar"
           trading_validation_from = Vyapari::TradingCalendar.validate_trading_day(from_date)
           unless trading_validation_from[:valid]
             errors << "HISTORICAL mode: from_date (#{from_date_str}) #{trading_validation_from[:error]}"

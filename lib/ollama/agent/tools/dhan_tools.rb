@@ -3,6 +3,7 @@
 require_relative "../tool_registry"
 require "date"
 require "time"
+require_relative "../../../vyapari/trading_calendar"
 
 module Ollama
   class Agent
@@ -481,7 +482,6 @@ module Ollama
                 to_dt = Date.parse(to_date)
 
                 # Check if dates are valid trading days (using TradingCalendar)
-                require_relative "../../vyapari/trading_calendar"
                 trading_validation_from = Vyapari::TradingCalendar.validate_trading_day(from_dt)
                 unless trading_validation_from[:valid]
                   return {
