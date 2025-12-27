@@ -220,12 +220,12 @@ Total: 9 iterations (fits in 5-8 budget → updated to 9)
 
 ## Key Benefits
 
-✅ **Deterministic** - Same inputs → same outputs  
-✅ **Structure-based** - Not "cheap premium" hunting  
-✅ **Context-aware** - Uses all MTF analysis  
-✅ **Time-sensitive** - Respects theta decay  
-✅ **Limited scope** - ±1-2 strikes prevents noise  
-✅ **Safety-first** - Multiple filters prevent bad strikes  
+✅ **Deterministic** - Same inputs → same outputs
+✅ **Structure-based** - Not "cheap premium" hunting
+✅ **Context-aware** - Uses all MTF analysis
+✅ **Time-sensitive** - Respects theta decay
+✅ **Limited scope** - ±1-2 strikes prevents noise
+✅ **Safety-first** - Multiple filters prevent bad strikes
 ✅ **Separation of concerns** - Analysis vs. Validation vs. Execution
 
 ---

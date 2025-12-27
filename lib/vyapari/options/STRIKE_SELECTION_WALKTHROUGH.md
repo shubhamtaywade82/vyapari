@@ -2,10 +2,10 @@
 
 ## Scenario
 
-**Date:** 2024-01-15  
-**Time:** 10:30 AM IST  
-**Underlying:** NIFTY  
-**Spot Price:** 22,450  
+**Date:** 2024-01-15
+**Time:** 10:30 AM IST
+**Underlying:** NIFTY
+**Spot Price:** 22,450
 **Mode:** OPTIONS_INTRADAY
 
 ---
@@ -35,7 +35,7 @@
 
 #### Step 1: Direction → CE or PE
 
-**Input:** MTF direction = `BULLISH`  
+**Input:** MTF direction = `BULLISH`
 **Decision:** `CE` (Call Options)
 
 ✅ **Result:** We're buying Call Options
@@ -44,7 +44,7 @@
 
 #### Step 2: Market Regime → How Far OTM?
 
-**Input:** HTF regime = `TREND_DAY`  
+**Input:** HTF regime = `TREND_DAY`
 **Rule:** Strong Trend/Expansion → ATM to 1 step OTM
 
 **Decision:** Allow `ATM` or `1 step OTM`
@@ -55,7 +55,7 @@
 
 #### Step 3: Momentum Strength → ITM vs ATM vs OTM
 
-**Input:** MTF momentum = `STRONG`  
+**Input:** MTF momentum = `STRONG`
 **Rule:** STRONG momentum → ATM or slight OTM
 
 **Decision:** Prefer `ATM` or `slight OTM`
@@ -66,7 +66,7 @@
 
 #### Step 4: Volatility Filter
 
-**Input:** 
+**Input:**
 - India VIX: 14.5 (moderate)
 - 15m candle expansion: Above average
 - Volatility State: `expanding`
@@ -81,7 +81,7 @@
 
 #### Step 5: Time Remaining
 
-**Input:** Current time = `10:30 AM`  
+**Input:** Current time = `10:30 AM`
 **Rule:** 9:20-11:30 → ATM/1 OTM allowed
 
 **Decision:** `atm_otm` allowed
@@ -264,11 +264,11 @@
 
 ## What Agent A Did NOT Do
 
-❌ Did NOT choose quantity (Agent B's job)  
-❌ Did NOT choose SL/TP values (Agent B's job)  
-❌ Did NOT optimize for "cheap premium" (structure-based, not cost-based)  
-❌ Did NOT decide execution timing (Agent C's job)  
-❌ Did NOT place orders (Agent C's job)  
+❌ Did NOT choose quantity (Agent B's job)
+❌ Did NOT choose SL/TP values (Agent B's job)
+❌ Did NOT optimize for "cheap premium" (structure-based, not cost-based)
+❌ Did NOT decide execution timing (Agent C's job)
+❌ Did NOT place orders (Agent C's job)
 ❌ Did NOT scan entire chain (limited to ±1-2 strikes)
 
 ---
