@@ -104,7 +104,7 @@ module Vyapari
           {
             symbol: symbol,
             exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
-            interval: interval,
+            interval: normalize_interval(interval),
             from_date: from_date,
             to_date: to_date
           }
@@ -124,7 +124,7 @@ module Vyapari
           {
             symbol: symbol,
             exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
-            interval: interval,
+            interval: normalize_interval(interval),
             from_date: from_date,
             to_date: to_date
           }
@@ -144,13 +144,84 @@ module Vyapari
           {
             symbol: symbol,
             exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
-            interval: interval,
+            interval: normalize_interval(interval),
+            from_date: from_date,
+            to_date: to_date
+          }
+        }
+      },
+      # "Show me NIFTY 5 minute candles" or "Show me NIFTY 1h candles"
+      /show\s+(?:me\s+)?(\w+)\s+(\d+)\s*(minute|minutes|min|m|h|hour|hours)?\s+candles?/i => {
+        tool: "dhan.history.intraday",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          interval_num = match[2]
+          interval_unit = match[3] || ""
+          from_date_match = query.match(/from[:\s]+(\d{4}-\d{2}-\d{2})/i)
+          to_date_match = query.match(/to[:\s]+(\d{4}-\d{2}-\d{2})/i)
+
+          from_date = from_date_match ? from_date_match[1] : nil
+          to_date = to_date_match ? to_date_match[1] : nil
+
+          # Build full interval string (e.g., "1h", "60m", "5min")
+          interval_str = interval_unit.empty? ? interval_num : "#{interval_num}#{interval_unit[0]}"
+
+          {
+            symbol: symbol,
+            exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
+            interval: normalize_interval(interval_str),
+            from_date: from_date,
+            to_date: to_date
+          }
+        }
+      },
+      # "NIFTY 5 minute candles" (without "show me")
+      /(\w+)\s+(\d+)\s*(minute|minutes|min|m|h|hour|hours)?\s+candles?/i => {
+        tool: "dhan.history.intraday",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          interval_num = match[2]
+          interval_unit = match[3] || ""
+          from_date_match = query.match(/from[:\s]+(\d{4}-\d{2}-\d{2})/i)
+          to_date_match = query.match(/to[:\s]+(\d{4}-\d{2}-\d{2})/i)
+
+          from_date = from_date_match ? from_date_match[1] : nil
+          to_date = to_date_match ? to_date_match[1] : nil
+
+          # Build full interval string (e.g., "1h", "60m", "5min")
+          interval_str = interval_unit.empty? ? interval_num : "#{interval_num}#{interval_unit[0]}"
+
+          {
+            symbol: symbol,
+            exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
+            interval: normalize_interval(interval_str),
             from_date: from_date,
             to_date: to_date
           }
         }
       }
     }.freeze
+
+    # Normalize interval string to API format
+    # Handles: "1h" → "60", "60m" → "60", "5min" → "5", etc.
+    def self.normalize_interval(interval_str)
+      return "5" if interval_str.nil? || interval_str.to_s.empty?
+
+      interval_str = interval_str.to_s.downcase.strip
+
+      # Handle hour format: "1h" → "60", "1 hour" → "60", "2h" → "120" (but API only supports 60)
+      hour_match = interval_str.match(/^(\d+)\s*h(?:our|ours)?$/)
+      if hour_match
+        hour_val = hour_match[1].to_i
+        return hour_val == 1 ? "60" : hour_val.to_s
+      end
+
+      # Extract numeric part (handles "60m", "5min", "15", etc.)
+      numeric = interval_str.match(/^(\d+)/)
+      return "5" unless numeric
+
+      numeric[1]
+    end
 
     def self.handle(query)
       # PRIMARY: Try LLM-based routing (understands natural language)
@@ -247,20 +318,27 @@ module Vyapari
           2. Use security_id as underlying_scrip (convert to integer)
           3. Call dhan.option.chain with underlying_scrip, underlying_seg="IDX_I", expiry (auto-resolve if needed)
 
-        - "NIFTY intraday 5min" →
+        - "NIFTY intraday 5min" or "Show me NIFTY 1 minute candles" →
           1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
           2. Get security_id and instrument_type from result
-          3. Call dhan.history.intraday with security_id, exchange_segment="IDX_I", instrument, interval="5", dates
+          3. Call dhan.history.intraday with:
+             - security_id, exchange_segment="IDX_I", instrument, interval (extracted from query: "5min" → "5", "1m" → "1")
+             - to_date: TODAY's date (#{Date.today.strftime("%Y-%m-%d")}) or last trading day if weekend
+             - from_date: Last trading day before to_date (usually yesterday, or Friday if today is Monday)
+             - CRITICAL: NEVER use old dates like 2022-02-25 or 2022-03-01 - ALWAYS use current dates!
 
         - "my balance" or "funds" → call dhan.funds.balance (no args needed)
         - "show positions" → call dhan.positions.list (no args needed)
         - "orders" → call dhan.orders.list (no args needed)
 
-        For intraday queries:
-        - Extract interval (e.g., "5min" → "5", "15min" → "15", "1m" → "1")
-        - Set to_date to today (or last trading day if weekend) in YYYY-MM-DD format
-        - Set from_date to last trading day before to_date in YYYY-MM-DD format
-        - instrument_type from instrument.find result (usually "INDEX" for NIFTY)
+         For intraday queries:
+         - Extract interval (e.g., "5min" → "5", "15min" → "15", "1m" → "1")
+         - CRITICAL: Always use CURRENT dates, not old dates!
+         - Set to_date to TODAY's date in YYYY-MM-DD format (e.g., "#{Date.today.strftime("%Y-%m-%d")}")
+         - If today is a weekend, use the last trading day (Friday)
+         - Set from_date to the last trading day BEFORE to_date (usually yesterday, or Friday if today is Monday)
+         - NEVER use dates from 2022, 2023, or any past years - always use current year dates
+         - instrument_type from instrument.find result (usually "INDEX" for NIFTY)
 
         IMPORTANT: Always provide ALL required fields. Never skip exchange_segment or other required parameters.
 
@@ -297,9 +375,28 @@ module Vyapari
           tool_name = tool_call[:tool] || tool_call["tool"] || "unknown"
           tool_args = tool_call[:args] || tool_call["args"] || {}
 
-          # Get result from context (last item) or from the tool call result
-          context = result[:context] || []
-          tool_result = last_tool_call[:result] || context.last || result[:reason] || {}
+          # For intraday historical queries, ensure dates are current (fix LLM's old dates)
+          if tool_name == "dhan.history.intraday"
+            original_to_date = tool_args[:to_date] || tool_args["to_date"]
+            tool_args = resolve_intraday_historical_args(tool_args)
+            # If dates were corrected, re-execute the tool with correct dates
+            if original_to_date && (tool_args[:to_date] || tool_args["to_date"]) != original_to_date
+              # Dates were corrected, need to re-execute the tool call
+              require_relative "options/complete_integration"
+              system = Options::CompleteIntegration.setup_system(dry_run: true)
+              registry = system[:registry]
+              tool_result = registry.call(tool_name, tool_args)
+              tool_result = tool_result[:result] || tool_result if tool_result.is_a?(Hash)
+            else
+              # Get result from context (last item) or from the tool call result
+              context = result[:context] || []
+              tool_result = last_tool_call[:result] || context.last || result[:reason] || {}
+            end
+          else
+            # Get result from context (last item) or from the tool call result
+            context = result[:context] || []
+            tool_result = last_tool_call[:result] || context.last || result[:reason] || {}
+          end
 
           # If result is an error, extract error message
           if tool_result.is_a?(Hash) && (tool_result[:status] == "error" || tool_result["status"] == "error")
@@ -547,11 +644,9 @@ module Vyapari
       end
 
       if args[:from_date].nil? || args[:from_date].to_s.empty?
-        # In LIVE mode, from_date should be the last trading day before to_date
-        to_dt = Date.parse(args[:to_date])
-        from_dt = to_dt.prev_day
-        # Skip weekends
-        from_dt = from_dt.prev_day while from_dt.saturday? || from_dt.sunday?
+        # Calculate from_date based on interval to ensure enough candles for indicators
+        interval = (args[:interval] || args["interval"] || "5").to_i
+        from_dt = calculate_from_date_for_interval(args[:to_date], interval)
         args[:from_date] = from_dt.strftime("%Y-%m-%d")
       end
 
@@ -559,6 +654,62 @@ module Vyapari
       args[:interval] = args[:interval].to_s if args[:interval]
 
       args
+    end
+
+    # Calculate from_date based on interval to ensure enough candles for indicators
+    # Different intervals need different date ranges to get sufficient data
+    # Indicators typically need:
+    #   - Moving averages: 50-200 candles
+    #   - RSI: 14-50 candles
+    #   - MACD: 26-50 candles
+    #   - Bollinger Bands: 20-50 candles
+    #   - Volume indicators: 20-50 candles
+    # We aim for ~200 candles to support all common indicators
+    def self.calculate_from_date_for_interval(to_date_str, interval_minutes)
+      to_dt = Date.parse(to_date_str)
+
+      # Calculate how many trading days we need to get ~200 candles
+      # Trading hours: 9:15 AM - 3:30 PM IST = 6.25 hours = 375 minutes
+      # Candles per day = 375 / interval_minutes
+      candles_per_day = 375.0 / interval_minutes
+
+      # Target: ~200 candles (enough for most indicators)
+      # Add 20% buffer for weekends/holidays
+      target_candles = 200
+      days_needed = (target_candles / candles_per_day * 1.2).ceil
+
+      # Cap at reasonable limits:
+      # - 1m: max 5 days (1875 candles max)
+      # - 5m: max 10 days (750 candles max)
+      # - 15m: max 20 days (500 candles max)
+      # - 60m: max 30 days (375 candles max)
+      max_days = case interval_minutes
+                 when 1 then 5
+                 when 5 then 10
+                 when 15 then 20
+                 when 25 then 25
+                 when 60 then 30
+                 else 10
+                 end
+
+      days_needed = [days_needed, max_days].min
+
+      # Calculate from_date by going back the required number of trading days
+      from_dt = to_dt
+      days_back = 0
+
+      while days_back < days_needed
+        from_dt = from_dt.prev_day
+        # Skip weekends
+        from_dt = from_dt.prev_day while from_dt.saturday? || from_dt.sunday?
+        days_back += 1
+      end
+
+      # Ensure from_date is at least 1 trading day before to_date (LIVE mode constraint)
+      min_from_dt = to_dt.prev_day
+      min_from_dt = min_from_dt.prev_day while min_from_dt.saturday? || min_from_dt.sunday?
+
+      [from_dt, min_from_dt].min
     end
 
     def self.call_tool(tool_name, args)

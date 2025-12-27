@@ -319,7 +319,9 @@ module Ollama
                         open: { type: "number" },
                         high: { type: "number" },
                         low: { type: "number" },
-                        close: { type: "number" }
+                        close: { type: "number" },
+                        volume: { type: "integer", description: "Volume traded in the timeframe" },
+                        open_interest: { type: "integer", description: "Open Interest (for F&O instruments, optional)" }
                       },
                       required: %w[ts open high low close]
                     }
@@ -1745,12 +1747,14 @@ module Ollama
           if raw_data.is_a?(Array) && raw_data.first.is_a?(Hash)
             candles = raw_data.map do |candle|
               {
-                ts: parse_timestamp(candle[:time] || candle["time"] || candle[:ts] || candle["ts"]),
+                ts: parse_timestamp(candle[:time] || candle["time"] || candle[:ts] || candle["ts"] || candle[:timestamp] || candle["timestamp"]),
                 open: candle[:open] || candle["open"] || 0,
                 high: candle[:high] || candle["high"] || 0,
                 low: candle[:low] || candle["low"] || 0,
-                close: candle[:close] || candle["close"] || 0
-              }
+                close: candle[:close] || candle["close"] || 0,
+                volume: candle[:volume] || candle["volume"] || 0,
+                open_interest: candle[:open_interest] || candle["open_interest"] || nil
+              }.compact
             end
 
             # Determine if last candle is complete
@@ -1758,21 +1762,42 @@ module Ollama
 
             { candles: candles, complete: complete }
           else
-            # Transform from DhanHQ format: {"open"=>[val1, val2], "high"=>[val1, val2], ...}
-            keys = %w[open high low close]
-            return { candles: [], complete: false } unless keys.all? { |k| raw_data[k] || raw_data[k.to_sym] }
+            # Transform from DhanHQ format: {"open"=>[val1, val2], "high"=>[val1, val2], "timestamp"=>[ts1, ts2], "volume"=>[v1, v2], ...}
+            required_keys = %w[open high low close]
+            return { candles: [], complete: false } unless required_keys.all? { |k| raw_data[k] || raw_data[k.to_sym] }
 
             length = (raw_data["open"] || raw_data[:open])&.length || 0
             return { candles: [], complete: false } if length.zero?
 
+            # Extract arrays (handle both string and symbol keys)
+            open_arr = raw_data["open"] || raw_data[:open] || []
+            high_arr = raw_data["high"] || raw_data[:high] || []
+            low_arr = raw_data["low"] || raw_data[:low] || []
+            close_arr = raw_data["close"] || raw_data[:close] || []
+            volume_arr = raw_data["volume"] || raw_data[:volume] || []
+            timestamp_arr = raw_data["timestamp"] || raw_data[:timestamp] || []
+            oi_arr = raw_data["open_interest"] || raw_data[:open_interest] || []
+
             candles = (0...length).map do |i|
-              {
-                ts: parse_timestamp(raw_data["time"]&.[](i) || raw_data[:time]&.[](i) || raw_data["ts"]&.[](i) || raw_data[:ts]&.[](i)),
-                open: (raw_data["open"] || raw_data[:open])[i] || 0,
-                high: (raw_data["high"] || raw_data[:high])[i] || 0,
-                low: (raw_data["low"] || raw_data[:low])[i] || 0,
-                close: (raw_data["close"] || raw_data[:close])[i] || 0
+              candle = {
+                ts: parse_timestamp(timestamp_arr[i] || raw_data["time"]&.[](i) || raw_data[:time]&.[](i) || raw_data["ts"]&.[](i) || raw_data[:ts]&.[](i)),
+                open: open_arr[i] || 0,
+                high: high_arr[i] || 0,
+                low: low_arr[i] || 0,
+                close: close_arr[i] || 0
               }
+
+              # Add volume if available (volume array exists and has data for this index)
+              if volume_arr.is_a?(Array) && volume_arr.length > 0 && i < volume_arr.length
+                candle[:volume] = volume_arr[i] || 0
+              end
+
+              # Add open_interest if available (for F&O instruments, only if non-zero)
+              if oi_arr.is_a?(Array) && oi_arr.length > 0 && i < oi_arr.length && oi_arr[i] && oi_arr[i] != 0
+                candle[:open_interest] = oi_arr[i]
+              end
+
+              candle
             end
 
             complete = determine_candle_completeness(candles, interval)
