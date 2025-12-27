@@ -6,12 +6,14 @@ module Ollama
     # This is what the LLM sees, not Ruby code
     class ToolDescriptor
       attr_reader :name, :description, :when_to_use, :when_not_to_use,
-                  :inputs, :outputs, :side_effects, :safety_rules, :category, :risk_level
+                  :inputs, :outputs, :side_effects, :safety_rules, :category, :risk_level,
+                  :dependencies
 
       def initialize(name:, description:, inputs:, outputs:,
                      when_to_use: nil, when_not_to_use: nil,
                      side_effects: [], safety_rules: [],
-                     category: nil, risk_level: :none)
+                     category: nil, risk_level: :none,
+                     dependencies: nil)
         @name = name
         @description = description
         @when_to_use = when_to_use
@@ -22,6 +24,7 @@ module Ollama
         @safety_rules = Array(safety_rules)
         @category = category
         @risk_level = risk_level
+        @dependencies = normalize_dependencies(dependencies)
       end
 
       # Convert to JSON schema format for LLM
@@ -38,6 +41,7 @@ module Ollama
         }
         schema[:category] = @category if @category
         schema[:risk_level] = @risk_level
+        schema[:dependencies] = @dependencies if @dependencies && !@dependencies.empty?
         schema
       end
 
@@ -99,6 +103,20 @@ module Ollama
 
       def normalize_hash(hash)
         hash.transform_keys(&:to_s)
+      end
+
+      def normalize_dependencies(deps)
+        return nil unless deps
+
+        normalized = deps.is_a?(Hash) ? deps.transform_keys(&:to_s) : {}
+        {
+          "required_tools" => Array(normalized["required_tools"] || normalized[:required_tools]),
+          "required_outputs" => Array(normalized["required_outputs"] || normalized[:required_outputs]),
+          "required_states" => Array(normalized["required_states"] || normalized[:required_states]),
+          "required_guards" => Array(normalized["required_guards"] || normalized[:required_guards]),
+          "forbidden_after" => Array(normalized["forbidden_after"] || normalized[:forbidden_after]),
+          "max_calls_per_trade" => normalized["max_calls_per_trade"] || normalized[:max_calls_per_trade]
+        }
       end
 
       def validate_field(value, schema, field_name)

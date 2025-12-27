@@ -2,17 +2,19 @@
 
 require_relative "tool_registry"
 require_relative "safety_gate"
+require_relative "dependency_enforcer"
 
 module Ollama
   class Agent
     # Executes tool calls from planner output
     # Handles sequential or parallel execution with safety limits
     class Executor
-      def initialize(registry: nil, tools: nil, max_parallel: 1, safety_gate: nil)
+      def initialize(registry: nil, tools: nil, max_parallel: 1, safety_gate: nil, dependency_enforcer: nil)
         @registry = registry
         @tools = tools # Legacy support
         @max_parallel = max_parallel
         @safety_gate = safety_gate
+        @dependency_enforcer = dependency_enforcer || (registry ? DependencyEnforcer.new(registry: registry) : nil)
         @execution_log = []
       end
 
@@ -21,10 +23,25 @@ module Ollama
       # @param args [Hash] Tool arguments
       # @param context [Hash] Execution context for safety checks
       # @return [Hash] Tool result with status and data
-      def execute(tool_name:, args: {}, context: {}) # rubocop:disable Lint/UnusedMethodArgument
+      def execute(tool_name:, args: {}, context: {})
         # Use registry if available, fall back to legacy tools
         if @registry
-          # Safety gate check
+          # ① Dependency validation (FIRST - before safety gate)
+          if @dependency_enforcer
+            dep_check = @dependency_enforcer.validate(tool_name: tool_name, context: context)
+            unless dep_check[:valid]
+              log_execution(tool_name, args, nil, "dependency_blocked", dep_check[:errors].join("; "))
+              return {
+                status: "error",
+                error: "Dependency validation failed: #{dep_check[:errors].join("; ")}",
+                tool: tool_name,
+                args: args,
+                dependency_errors: dep_check[:errors]
+              }
+            end
+          end
+
+          # ② Safety gate check
           if @safety_gate
             descriptor = @registry.descriptor(tool_name)
             if descriptor

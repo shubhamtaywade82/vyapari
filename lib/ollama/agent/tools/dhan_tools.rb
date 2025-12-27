@@ -1183,6 +1183,23 @@ module Ollama
               when_not_to_use: "Without SL/TP planned or during uncertainty",
               risk_level: :high,
               side_effects: ["REAL MONEY ORDER"],
+              dependencies: {
+                required_states: ["ORDER_EXECUTION"],
+                required_outputs: [
+                  "validated_trade_plan",
+                  "final_quantity",
+                  "numeric_stop_loss"
+                ],
+                required_guards: [
+                  "RiskGuard",
+                  "ExecutionGuard"
+                ],
+                forbidden_after: [
+                  "position_opened",
+                  "order_failed"
+                ],
+                max_calls_per_trade: 1
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1259,6 +1276,16 @@ module Ollama
               when_not_to_use: "If order already executed",
               risk_level: :high,
               side_effects: ["MODIFIES REAL ORDER"],
+              dependencies: {
+                required_outputs: [
+                  "order_exists",
+                  "order_status"
+                ],
+                forbidden_after: [
+                  "order_executed",
+                  "order_cancelled"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1311,6 +1338,16 @@ module Ollama
               when_not_to_use: "If order already executed",
               risk_level: :high,
               side_effects: ["CANCELS REAL ORDER"],
+              dependencies: {
+                required_outputs: [
+                  "order_exists",
+                  "order_status"
+                ],
+                forbidden_after: [
+                  "order_executed",
+                  "order_cancelled"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1359,6 +1396,17 @@ module Ollama
               when_not_to_use: "If stop-loss or target will handle exit",
               risk_level: :high,
               side_effects: ["REAL MONEY ORDER"],
+              dependencies: {
+                required_outputs: [
+                  "position_exists"
+                ],
+                required_guards: [
+                  "PositionGuard"
+                ],
+                forbidden_after: [
+                  "position_closed"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1534,6 +1582,16 @@ module Ollama
               when_not_to_use: "If order already executed",
               risk_level: :high,
               side_effects: ["MODIFIES REAL SUPER ORDER"],
+              dependencies: {
+                required_outputs: [
+                  "order_exists",
+                  "order_status"
+                ],
+                forbidden_after: [
+                  "order_executed",
+                  "order_cancelled"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
@@ -1592,6 +1650,16 @@ module Ollama
               when_not_to_use: "If order already executed",
               risk_level: :high,
               side_effects: ["CANCELS REAL SUPER ORDER"],
+              dependencies: {
+                required_outputs: [
+                  "order_exists",
+                  "order_status"
+                ],
+                forbidden_after: [
+                  "order_executed",
+                  "order_cancelled"
+                ]
+              },
               inputs: {
                 type: "object",
                 properties: {
