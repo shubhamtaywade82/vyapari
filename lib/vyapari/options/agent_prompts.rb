@@ -53,7 +53,9 @@ module Vyapari
 
           STEP 5: Synthesis - Final TradePlan
           - Combine all timeframe analyses + strike selection
-          - Output final TradePlan JSON with strike_selection
+          - Add stop_loss_logic (structural, NOT numeric price)
+          - Add take_profit_logic (market-based, NOT numeric price)
+          - Output final TradePlan JSON with strike_selection, SL/TP logic
 
           ALLOWED TOOLS:
           - dhan.instrument.find (find trading instruments)
@@ -213,12 +215,20 @@ module Vyapari
               },
               "required" => %w[preferred_type atm_strike candidates]
             },
+            "stop_loss_logic" => {
+              "type" => "string",
+              "description": "Structural stop-loss logic (e.g., '1m candle close below last higher low', NOT numeric price)"
+            },
+            "take_profit_logic" => {
+              "type" => "string",
+              "description": "Market-based take profit logic (e.g., '15m range high + expansion', NOT numeric price)"
+            },
             "invalidations" => {
               "type" => "array",
               "items" => { "type" => "string" }
             }
           },
-          "required" => %w[mode htf mtf ltf bias strike_bias strike_selection invalidations]
+          "required" => %w[mode htf mtf ltf bias strike_bias strike_selection stop_loss_logic take_profit_logic invalidations]
         }
       end
 
@@ -231,57 +241,110 @@ module Vyapari
           You are a PLAN VALIDATION agent for options trading.
 
           YOUR ROLE:
-          - Validate trade plan against risk rules
-          - Check available funds
-          - Verify stop-loss is set
+          - Convert Agent A's logical SL/TP to numeric prices
+          - Calculate lot size based on risk (NIFTY=75, SENSEX=20)
+          - Validate risk limits and funds
           - Output APPROVED or REJECTED with ExecutablePlan
+
+          CRITICAL SEPARATION:
+          - Agent A provides: SL logic (structural), TP logic (market-based), strike candidates
+          - YOU convert: SL logic → numeric SL price, TP logic → numeric TP prices
+          - YOU calculate: Lot size based on risk (NOT Agent A's job)
+
+          LOT SIZE CALCULATION (YOUR JOB):
+          Formula: allowed_lots = floor(max_risk_per_trade / risk_per_lot)
+          Where: risk_per_lot = (entry_price - stop_loss_price) × lot_size
+          - NIFTY lot = 75
+          - SENSEX lot = 20
+          - Max lots per trade = 6 (hard cap)
+          - Max risk per trade = 0.5% to 1% of capital
+
+          STOP-LOSS CONVERSION (YOUR JOB):
+          - Agent A provides: "1m candle close below last higher low" (logical)
+          - YOU convert to: Numeric SL price (e.g., ₹92)
+          - Hard caps: NIFTY max 30% SL, SENSEX max 25% SL
+          - If logical SL > cap → REJECT
+
+          TAKE PROFIT CONVERSION (YOUR JOB):
+          - Agent A provides: "15m range high + expansion" (market-based)
+          - YOU convert to: Numeric TP prices (partial + final)
+          - Minimum RR: Partial 1.2x, Final 2.0x
+          - Prefer partial booking (50% at partial, 50% at final)
 
           ALLOWED TOOLS:
           - dhan.funds.balance (check available margin)
           - dhan.positions.list (check current positions)
           - dhan.instrument.find (get instrument metadata)
+          - dhan.market.ltp (get current option LTP for SL/TP conversion)
 
           BLOCKED TOOLS (DO NOT USE):
           - dhan.order.* (order placement not allowed)
-          - dhan.market.* (market data not needed)
-          - dhan.history.* (historical data not needed)
+          - dhan.history.* (historical data not needed for validation)
 
           EXECUTABLE PLAN SCHEMA (if approved):
           {
             "status": "APPROVED",
             "reason": "string explaining approval",
             "execution_plan": {
-              "quantity": 50,
-              "entry_price": 105,
-              "stop_loss": 92,
-              "target": 130,
+              "quantity": 75,
+              "entry_price": 105.50,
+              "stop_loss": 92.00,
+              "take_profit": {
+                "partial": {
+                  "price": 125.00,
+                  "rr": 1.2,
+                  "exit_pct": 50
+                },
+                "final": {
+                  "price": 145.00,
+                  "rr": 2.0,
+                  "exit_pct": 50
+                }
+              },
               "order_type": "SUPER",
-              "security_id": "string"
+              "security_id": "string",
+              "lots": 1,
+              "total_risk": 1012.50
             }
           }
 
           REJECTION SCHEMA (if rejected):
           {
             "status": "REJECTED",
-            "reason": "string explaining why rejected"
+            "reason": "string explaining why rejected (e.g., 'Risk per lot exceeds max risk', 'SL exceeds 30% cap', 'Insufficient funds')"
           }
 
           HARD RULES (MANDATORY):
-          1. No stop-loss in plan → REJECT immediately
-          2. Risk exceeds allowed limits → REJECT
-          3. Funds insufficient → REJECT
-          4. Position size exceeds max → REJECT
-          5. If uncertain → REJECT (rejection is success)
+          1. No stop_loss_logic in plan → REJECT immediately
+          2. SL percentage > max cap (30% NIFTY, 25% SENSEX) → REJECT
+          3. Risk per lot > max risk per trade → REJECT
+          4. Funds insufficient → REJECT
+          5. Lots < 1 → REJECT
+          6. TP RR < minimum (1.2x partial, 2.0x final) → REJECT
+          7. If uncertain → REJECT (rejection is success)
+
+          VALIDATION STEPS (FOLLOW IN ORDER):
+          1. Get funds balance
+          2. Get current option LTP (for selected strike)
+          3. Convert SL logic → numeric SL price
+          4. Validate SL % cap
+          5. Convert TP logic → numeric TP prices
+          6. Validate TP RR ratios
+          7. Calculate lot size
+          8. Validate funds sufficient
+          9. Output APPROVED or REJECTED
 
           RULES:
-          1. Check funds before approving
-          2. Verify stop-loss exists in plan
-          3. Check position size limits
-          4. If uncertain → REJECT (rejection is success)
-          5. Maximum 3 iterations
-          6. Output "approved" or "rejected" as final action
+          1. Always check funds before approving
+          2. Always convert SL/TP logic to numeric prices
+          3. Always calculate lot size (never use Agent A's quantity)
+          4. Always validate risk limits
+          5. If uncertain → REJECT (rejection is success)
+          6. Maximum 3 iterations
+          7. Output "approved" or "rejected" as final action
 
           REMEMBER: In trading, rejection is GOOD. Capital protection > trade frequency.
+          YOU are the risk gatekeeper. Be paranoid.
         PROMPT
       end
 
@@ -297,17 +360,64 @@ module Vyapari
             "execution_plan" => {
               "type" => "object",
               "properties" => {
-                "quantity" => { "type" => "integer", "minimum" => 1 },
-                "entry_price" => { "type" => "number" },
-                "stop_loss" => { "type" => "number" },
-                "target" => { "type" => "number", "nullable" => true },
+                "quantity" => {
+                  "type" => "integer",
+                  "minimum" => 1,
+                  "description": "Total quantity (lots × lot_size)"
+                },
+                "lots" => {
+                  "type" => "integer",
+                  "minimum" => 1,
+                  "maximum" => 6,
+                  "description": "Number of lots (NIFTY=75, SENSEX=20 per lot)"
+                },
+                "entry_price" => {
+                  "type" => "number",
+                  "description": "Entry price per option (from current LTP)"
+                },
+                "stop_loss" => {
+                  "type" => "number",
+                  "description": "Stop-loss price per option (converted from SL logic)"
+                },
+                "take_profit" => {
+                  "type" => "object",
+                  "properties" => {
+                    "partial" => {
+                      "type" => "object",
+                      "properties" => {
+                        "price" => { "type" => "number" },
+                        "rr" => { "type" => "number", "minimum" => 1.2 },
+                        "exit_pct" => { "type" => "integer", "minimum" => 1, "maximum" => 100 }
+                      },
+                      "required" => %w[price rr exit_pct]
+                    },
+                    "final" => {
+                      "type" => "object",
+                      "properties" => {
+                        "price" => { "type" => "number" },
+                        "rr" => { "type" => "number", "minimum" => 2.0 },
+                        "exit_pct" => { "type" => "integer", "minimum" => 1, "maximum" => 100 }
+                      },
+                      "required" => %w[price rr exit_pct]
+                    }
+                  },
+                  "required" => %w[partial final]
+                },
                 "order_type" => {
                   "type" => "string",
-                  "enum" => %w[SUPER MARKET LIMIT]
+                  "enum" => %w[SUPER MARKET LIMIT],
+                  "description": "Order type (prefer SUPER for SL/TP)"
                 },
-                "security_id" => { "type" => "string" }
+                "security_id" => {
+                  "type" => "string",
+                  "description": "Selected strike security_id from Agent A candidates"
+                },
+                "total_risk" => {
+                  "type" => "number",
+                  "description": "Total risk in rupees (lots × risk_per_lot)"
+                }
               },
-              "required" => %w[quantity entry_price stop_loss order_type security_id]
+              "required" => %w[quantity lots entry_price stop_loss take_profit order_type security_id total_risk]
             }
           },
           "required" => %w[status reason]
