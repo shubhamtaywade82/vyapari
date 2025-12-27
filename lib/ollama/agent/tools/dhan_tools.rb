@@ -997,8 +997,39 @@ module Ollama
             },
             handler: lambda { |_args|
               begin
-                if defined?(DhanHQ::Models::Position) && DhanHQ::Models::Position.respond_to?(:list)
-                  DhanHQ::Models::Position.list
+                if defined?(DhanHQ::Models::Position)
+                  # Try .all first (most common), then .list, then fallback
+                  positions = if DhanHQ::Models::Position.respond_to?(:all)
+                                DhanHQ::Models::Position.all
+                              elsif DhanHQ::Models::Position.respond_to?(:list)
+                                DhanHQ::Models::Position.list
+                              else
+                                []
+                              end
+
+                  # Convert Position objects to hash format expected by tool
+                  if positions.is_a?(Array) && !positions.empty? && positions.first.respond_to?(:attributes)
+                    positions.map do |pos|
+                      {
+                        security_id: pos.security_id.to_s,
+                        trading_symbol: pos.trading_symbol,
+                        position_type: pos.position_type,
+                        exchange_segment: pos.exchange_segment,
+                        product_type: pos.product_type,
+                        quantity: pos.net_qty || pos.buy_qty || 0,
+                        average_price: pos.buy_avg || pos.cost_price || 0.0,
+                        current_price: pos.cost_price || 0.0,
+                        pnl: pos.unrealized_profit || 0.0,
+                        realized_pnl: pos.realized_profit || 0.0,
+                        multiplier: pos.multiplier || 1
+                      }
+                    end
+                  elsif positions.is_a?(Array)
+                    # Already in array format
+                    positions
+                  else
+                    []
+                  end
                 else
                   { error: "Positions list not available", positions: [] }
                 end
@@ -1361,7 +1392,13 @@ module Ollama
               else
                 begin
                   # Find position and place opposite order
-                  positions = DhanHQ::Models::Position.list
+                  positions = if DhanHQ::Models::Position.respond_to?(:all)
+                                DhanHQ::Models::Position.all
+                              elsif DhanHQ::Models::Position.respond_to?(:list)
+                                DhanHQ::Models::Position.list
+                              else
+                                []
+                              end
                   position = positions.find { |p| p.security_id == (args[:security_id] || args["security_id"]) }
 
                   return { order_id: nil, status: "error", error: "Position not found" } unless position

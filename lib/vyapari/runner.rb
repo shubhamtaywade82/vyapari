@@ -22,12 +22,22 @@ module Vyapari
 
     def self.detect_mode(query)
       # Check for simple tool queries first (data APIs)
-      if query.match?(/\b(get|fetch|find)\s+\w+|ltp|quote|option\s+chain|funds|balance|positions|orders\b/i)
-        return :tool_query
-      end
+      # These are direct data API calls, not trading workflows
+      tool_query_patterns = [
+        /\b(get|fetch|show|what|list|find)\s+(?:me\s+)?(?:the\s+)?/i, # "get", "fetch", "show me", "what is", "list"
+        /\b(ltp|price|quote|ohlc|candles?|option\s+chain|funds?|balance|margin|positions?|orders?)\b/i, # Tool keywords
+        /\b(intraday|historical|1m|5m|15m|1min|5min|15min)\s+(?:ohlc|candles?|data)\b/i, # Historical data queries
+        /^\s*(what|show|get|fetch|list)\s+/i # Starts with query words
+      ]
+
+      return :tool_query if tool_query_patterns.any? { |pattern| query.match?(pattern) }
 
       # Deterministic rule-based detection (no LLM guessing)
-      return :options if query.match?(/option|ce|pe|expiry|intraday/i)
+      # Only route to options if it's clearly a trading workflow, not a data query
+      if query.match?(/\b(analyze|trade|buy|sell|entry|exit|stoploss|target)\b/i) &&
+         query.match?(/option|ce|pe|expiry/i)
+        return :options
+      end
 
       :swing
     end

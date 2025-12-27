@@ -2,11 +2,13 @@
 
 require "date"
 
-# Simple tool query handler for direct data API calls
+# LLM-powered tool query handler for direct data API calls
+# Uses Ollama agent to understand natural language and route to appropriate tools
 # Allows testing individual tools without going through full trading workflow
 module Vyapari
   class ToolQueryHandler
-    # Map query patterns to tool names and argument extractors
+    # Legacy pattern matching (kept for backward compatibility)
+    # LLM-based routing is now the primary method
     TOOL_PATTERNS = {
       /get\s+(\w+)\s+ltp/i => {
         tool: "dhan.market.ltp",
@@ -85,23 +87,88 @@ module Vyapari
       /get\s+orders/i => {
         tool: "dhan.orders.list",
         extract_args: ->(match, query) { {} }
+      },
+      # Intraday historical data patterns
+      /get\s+(\w+)\s+intraday\s+(\d+)\s*(?:min|m|minute|minutes)?/i => {
+        tool: "dhan.history.intraday",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          interval = match[2]
+          # Extract dates if provided, otherwise use defaults
+          from_date_match = query.match(/from[:\s]+(\d{4}-\d{2}-\d{2})/i)
+          to_date_match = query.match(/to[:\s]+(\d{4}-\d{2}-\d{2})/i)
+
+          from_date = from_date_match ? from_date_match[1] : nil
+          to_date = to_date_match ? to_date_match[1] : nil
+
+          {
+            symbol: symbol,
+            exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
+            interval: interval,
+            from_date: from_date,
+            to_date: to_date
+          }
+        }
+      },
+      /get\s+(\w+)\s+historical\s+intraday\s+(\d+)\s*(?:min|m|minute|minutes)?/i => {
+        tool: "dhan.history.intraday",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          interval = match[2]
+          from_date_match = query.match(/from[:\s]+(\d{4}-\d{2}-\d{2})/i)
+          to_date_match = query.match(/to[:\s]+(\d{4}-\d{2}-\d{2})/i)
+
+          from_date = from_date_match ? from_date_match[1] : nil
+          to_date = to_date_match ? to_date_match[1] : nil
+
+          {
+            symbol: symbol,
+            exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
+            interval: interval,
+            from_date: from_date,
+            to_date: to_date
+          }
+        }
+      },
+      /(\w+)\s+intraday\s+(\d+)\s*(?:min|m|minute|minutes)?/i => {
+        tool: "dhan.history.intraday",
+        extract_args: lambda { |match, query|
+          symbol = match[1]
+          interval = match[2]
+          from_date_match = query.match(/from[:\s]+(\d{4}-\d{2}-\d{2})/i)
+          to_date_match = query.match(/to[:\s]+(\d{4}-\d{2}-\d{2})/i)
+
+          from_date = from_date_match ? from_date_match[1] : nil
+          to_date = to_date_match ? to_date_match[1] : nil
+
+          {
+            symbol: symbol,
+            exchange_segment: symbol.match?(/NIFTY|BANKNIFTY|SENSEX/i) ? "IDX_I" : "NSE_EQ",
+            interval: interval,
+            from_date: from_date,
+            to_date: to_date
+          }
+        }
       }
     }.freeze
 
     def self.handle(query)
-      # Try to match query against patterns
+      # PRIMARY: Try LLM-based routing (understands natural language)
+      llm_result = route_with_llm(query)
+      return llm_result if llm_result && !llm_result[:error]
+
+      # FALLBACK: Pattern matching for backward compatibility
       tool_info = find_tool_for_query(query)
 
       unless tool_info
         return {
-          error: "Could not parse query. Available patterns:\n" +
-                 "  - 'get NIFTY ltp' or 'NIFTY ltp'\n" +
-                 "  - 'get NIFTY quote'\n" +
-                 "  - 'find instrument NIFTY'\n" +
-                 "  - 'get NIFTY option chain' or 'NIFTY option chain'\n" +
-                 "  - 'get funds' or 'balance'\n" +
-                 "  - 'get positions'\n" +
-                 "  - 'get orders'"
+          error: "Could not parse query. Try natural language like:\n" +
+                 "  - 'What is NIFTY's current price?'\n" +
+                 "  - 'Get NIFTY option chain'\n" +
+                 "  - 'Show me NIFTY 5 minute candles'\n" +
+                 "  - 'What's my account balance?'\n" +
+                 "  - 'List my positions'\n" +
+                 "  - 'Show my orders'"
         }
       end
 
@@ -119,6 +186,9 @@ module Vyapari
       # For option chain, if expiry is missing or default, fetch nearest expiry first
       args = resolve_expiry_for_option_chain(args) if tool_info[:tool] == "dhan.option.chain"
 
+      # For intraday historical, resolve symbol and set up dates
+      args = resolve_intraday_historical_args(args) if tool_info[:tool] == "dhan.history.intraday"
+
       # Call the tool
       result = call_tool(tool_info[:tool], args)
 
@@ -130,6 +200,150 @@ module Vyapari
     end
 
     private
+
+    # Use LLM to understand query and route to appropriate tool
+    def self.route_with_llm(query)
+      require_relative "options/complete_integration"
+      system = Options::CompleteIntegration.setup_system(dry_run: true)
+      registry = system[:registry]
+
+      # Create a simple agent for tool routing
+      require_relative "../ollama/agent"
+      agent = Ollama::Agent.new(
+        registry: registry,
+        max_iterations: 4, # Allow multiple iterations for multi-step calls (instrument.find → target tool)
+        timeout: 20
+      )
+
+      # Create a routing prompt
+      routing_prompt = <<~PROMPT
+        User wants to call a data API tool. Understand their query and call the appropriate tool.
+
+        User query: "#{query}"
+
+        Instructions:
+        1. Identify which tool matches the user's intent
+        2. Extract all required arguments from the query
+        3. For tools that need security_id, you MUST first call dhan.instrument.find to resolve the symbol
+        4. Call the target tool with ALL required arguments
+        5. Return the tool's result
+
+        CRITICAL RULES:
+        - dhan.instrument.find REQUIRES: symbol AND exchange_segment
+          * For indices (NIFTY, BANKNIFTY, SENSEX): exchange_segment = "IDX_I"
+          * For stocks: exchange_segment = "NSE_EQ" or "BSE_EQ"
+        - dhan.market.ltp REQUIRES: security_id AND exchange_segment (get from instrument.find first)
+        - dhan.history.intraday REQUIRES: security_id, exchange_segment, instrument, interval, from_date, to_date
+        - dhan.option.chain REQUIRES: underlying_scrip (integer security_id), underlying_seg, expiry
+
+        Examples:
+        - "get NIFTY ltp" or "NIFTY price" →
+          1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
+          2. Use the security_id from result
+          3. Call dhan.market.ltp with security_id and exchange_segment="IDX_I"
+
+        - "NIFTY option chain" →
+          1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
+          2. Use security_id as underlying_scrip (convert to integer)
+          3. Call dhan.option.chain with underlying_scrip, underlying_seg="IDX_I", expiry (auto-resolve if needed)
+
+        - "NIFTY intraday 5min" →
+          1. Call dhan.instrument.find with symbol="NIFTY", exchange_segment="IDX_I"
+          2. Get security_id and instrument_type from result
+          3. Call dhan.history.intraday with security_id, exchange_segment="IDX_I", instrument, interval="5", dates
+
+        - "my balance" or "funds" → call dhan.funds.balance (no args needed)
+        - "show positions" → call dhan.positions.list (no args needed)
+        - "orders" → call dhan.orders.list (no args needed)
+
+        For intraday queries:
+        - Extract interval (e.g., "5min" → "5", "15min" → "15", "1m" → "1")
+        - Set to_date to today (or last trading day if weekend) in YYYY-MM-DD format
+        - Set from_date to last trading day before to_date in YYYY-MM-DD format
+        - instrument_type from instrument.find result (usually "INDEX" for NIFTY)
+
+        IMPORTANT: Always provide ALL required fields. Never skip exchange_segment or other required parameters.
+
+        Call the tool(s) now.
+      PROMPT
+
+      # Run agent with routing task
+      # The agent.loop method runs the agent loop and returns a result hash
+      result = agent.loop(task: routing_prompt)
+
+      # Debug: Log result structure if needed
+      # puts "DEBUG: Agent result: #{result.inspect}" if ENV["DEBUG"]
+
+      # Extract tool call from agent result
+      # Handle various status values: completed, max_iterations, timeout, etc.
+      if result && result[:status]
+        # Extract from trace - find all tool calls
+        trace = result[:trace] || []
+        tool_calls = trace.select { |t| t[:tool_call] }
+
+        # Get the last successful tool call (the one that produced the final result)
+        # Skip instrument.find calls - we want the actual target tool
+        target_tool_calls = tool_calls.reject do |t|
+          tool_name = t[:tool_call]&.dig(:tool) || t[:tool_call]&.dig("tool")
+          tool_name == "dhan.instrument.find"
+        end
+
+        last_tool_call = target_tool_calls.last || tool_calls.last || trace.reverse.find do |t|
+          t[:tool_call] || t[:result]
+        end
+
+        if last_tool_call
+          tool_call = last_tool_call[:tool_call] || {}
+          tool_name = tool_call[:tool] || tool_call["tool"] || "unknown"
+          tool_args = tool_call[:args] || tool_call["args"] || {}
+
+          # Get result from context (last item) or from the tool call result
+          context = result[:context] || []
+          tool_result = last_tool_call[:result] || context.last || result[:reason] || {}
+
+          # If result is an error, extract error message
+          if tool_result.is_a?(Hash) && (tool_result[:status] == "error" || tool_result["status"] == "error")
+            error_msg = tool_result[:error] || tool_result["error"] || "Tool execution failed"
+            return {
+              error: error_msg,
+              tool: tool_name,
+              args: tool_args,
+              result: tool_result
+            }
+          end
+
+          # Return successful result
+          return {
+            tool: tool_name,
+            args: tool_args,
+            result: tool_result.is_a?(Hash) ? tool_result : { output: tool_result }
+          }
+        elsif result[:reason]
+          # If no tool call but we have a reason, might be a final answer
+          return {
+            tool: "final",
+            args: {},
+            result: { output: result[:reason] }
+          }
+        end
+
+        # If we have a result but couldn't extract tool call, check if it's an error status
+        if %w[error verification_failed timeout].include?(result[:status])
+          return {
+            error: result[:reason] || "LLM routing failed: #{result[:status]}",
+            tool: nil,
+            args: {},
+            result: nil
+          }
+        end
+      end
+
+      # If LLM routing didn't produce a clear result, return nil to fall back to patterns
+      nil
+    rescue StandardError => e
+      # If LLM routing fails, fall back to pattern matching
+      nil
+    end
 
     def self.find_tool_for_query(query)
       TOOL_PATTERNS.each do |pattern, tool_info|
@@ -280,6 +494,69 @@ module Vyapari
           end
         end
       end
+
+      args
+    end
+
+    # Resolve arguments for intraday historical data
+    def self.resolve_intraday_historical_args(args)
+      # First, resolve symbol to security_id and get instrument type
+      if args[:symbol] && !args[:security_id]
+        begin
+          require_relative "options/complete_integration"
+          system = Options::CompleteIntegration.setup_system(dry_run: true)
+          registry = system[:registry]
+
+          # Call instrument.find to get security_id and instrument type
+          find_result = registry.call("dhan.instrument.find", {
+                                        symbol: args[:symbol],
+                                        exchange_segment: args[:exchange_segment]
+                                      })
+
+          if find_result[:status] == "success" && find_result[:result]
+            result = find_result[:result]
+            args[:security_id] = (result[:security_id] || result["security_id"]).to_s
+            args[:instrument] = result[:instrument_type] || result["instrument_type"] || "INDEX"
+            args.delete(:symbol) # Remove symbol, use security_id instead
+          end
+        rescue StandardError => e
+          # If resolution fails, use defaults
+          args[:instrument] = args[:exchange_segment] == "IDX_I" ? "INDEX" : "EQUITY"
+        end
+      end
+
+      # Set up dates if not provided
+      today = Date.today
+
+      # Find last trading day (skip weekends)
+      last_trading_day = today
+      last_trading_day = last_trading_day.prev_day while last_trading_day.saturday? || last_trading_day.sunday?
+
+      # If today is weekend, use Friday
+      if today.saturday? || today.sunday?
+        last_trading_day = today.prev_day
+        last_trading_day = last_trading_day.prev_day while last_trading_day.saturday? || last_trading_day.sunday?
+      end
+
+      # Set default dates following production-grade rules
+      # LIVE mode: from_date = last trading day before to_date, to_date = today (if trading day) or last trading day
+      if args[:to_date].nil? || args[:to_date].to_s.empty?
+        # Use today if it's a trading day, otherwise use last trading day
+        to_date = today.saturday? || today.sunday? ? last_trading_day : today
+        args[:to_date] = to_date.strftime("%Y-%m-%d")
+      end
+
+      if args[:from_date].nil? || args[:from_date].to_s.empty?
+        # In LIVE mode, from_date should be the last trading day before to_date
+        to_dt = Date.parse(args[:to_date])
+        from_dt = to_dt.prev_day
+        # Skip weekends
+        from_dt = from_dt.prev_day while from_dt.saturday? || from_dt.sunday?
+        args[:from_date] = from_dt.strftime("%Y-%m-%d")
+      end
+
+      # Ensure interval is a string
+      args[:interval] = args[:interval].to_s if args[:interval]
 
       args
     end

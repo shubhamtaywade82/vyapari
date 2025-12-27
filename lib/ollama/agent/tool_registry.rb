@@ -15,7 +15,13 @@ module Ollama
       # @param descriptor [ToolDescriptor, Hash] Tool descriptor
       # @param handler [Proc, Method, Object] Tool execution handler
       def register(descriptor:, handler:)
-        descriptor = ToolDescriptor.new(**descriptor) if descriptor.is_a?(Hash)
+        if descriptor.is_a?(Hash)
+          # Filter out unsupported keys (purpose, examples, etc.) before creating ToolDescriptor
+          supported_keys = [:name, :description, :when_to_use, :when_not_to_use, :inputs, :outputs,
+                           :side_effects, :safety_rules, :category, :risk_level]
+          filtered_descriptor = descriptor.select { |k, _| supported_keys.include?(k.to_sym) }
+          descriptor = ToolDescriptor.new(**filtered_descriptor)
+        end
         name = descriptor.name
 
         if @tools.key?(name)
