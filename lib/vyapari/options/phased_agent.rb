@@ -293,105 +293,21 @@ module Vyapari
 
       # Build analysis prompt
       def build_analysis_prompt(task)
-        <<~PROMPT
-          You are a MARKET ANALYSIS agent for options trading.
-
-          YOUR ROLE:
-          - Analyze market data, historical patterns, and option chains
-          - Generate a trade plan with entry, stop-loss, and target
-          - DO NOT place any orders
-          - DO NOT check funds or risk limits
-          - Output final plan as JSON matching the TradePlan schema
-
-          TRADE PLAN SCHEMA:
-          {
-            "bias": "BULLISH | BEARISH | NO_TRADE",
-            "setup": "BREAKOUT | REVERSAL | TREND | RANGE",
-            "strike": {
-              "security_id": "string",
-              "type": "CE | PE",
-              "moneyness": "ATM | ITM | OTM"
-            },
-            "entry_logic": "text explanation",
-            "invalidation": "text explanation"
-          }
-
-          RULES:
-          - Use tools to gather market data
-          - Analyze structure, trend, volatility, momentum
-          - If market is unclear or choppy, return bias: "NO_TRADE"
-          - Output plan when complete (action: "final")
-          - Maximum #{Ollama::Agent::IterationLimits::ANALYSIS} iterations
-
-          TASK:
-          #{task}
-        PROMPT
+        require_relative "agent_prompts"
+        AgentPrompts.agent_a_system_prompt + "\n\nTASK:\n#{task}"
       end
 
       # Build validation prompt
       def build_validation_prompt(trade_plan)
-        <<~PROMPT
-          You are a PLAN VALIDATION agent for options trading.
-
-          YOUR ROLE:
-          - Validate trade plan against risk rules
-          - Check available funds
-          - Verify stop-loss is set
-          - Output APPROVED or REJECTED with ExecutablePlan
-
-          EXECUTABLE PLAN SCHEMA (if approved):
-          {
-            "status": "APPROVED",
-            "reason": "string",
-            "execution_plan": {
-              "quantity": 50,
-              "entry_price": 105,
-              "stop_loss": 92,
-              "target": 130,
-              "order_type": "SUPER",
-              "security_id": "string"
-            }
-          }
-
-          REJECTION SCHEMA (if rejected):
-          {
-            "status": "REJECTED",
-            "reason": "string explaining why"
-          }
-
-          RULES:
-          - Check funds before approving
-          - Verify stop-loss exists in plan
-          - Check position size limits
-          - If uncertain → REJECT (rejection is success)
-          - Maximum #{Ollama::Agent::IterationLimits::VALIDATION} iterations
-          - Output "approved" or "rejected" as final action
-
-          TRADE PLAN TO VALIDATE:
-          #{JSON.pretty_generate(trade_plan)}
-        PROMPT
+        require_relative "agent_prompts"
+        AgentPrompts.agent_b_system_prompt + "\n\nTRADE PLAN TO VALIDATE:\n#{JSON.pretty_generate(trade_plan)}"
       end
 
       # Build execution prompt
       def build_execution_prompt(executable_plan)
-        <<~PROMPT
-          You are an ORDER EXECUTION agent for options trading.
-
-          YOUR ROLE:
-          - Execute approved trade plan
-          - Place Super Order with SL/TP
-          - Confirm execution with order_id
-
-          RULES:
-          - Execute exactly as planned
-          - Prefer Super Order (dhan.super.place) over regular order
-          - Place order once only
-          - Maximum #{Ollama::Agent::IterationLimits::TRADING_EXECUTION} iterations
-          - Output order_id when complete
-
-          EXECUTABLE PLAN:
-          #{JSON.pretty_generate(executable_plan[:execution_plan] || executable_plan["execution_plan"])}
-        PROMPT
+        require_relative "agent_prompts"
+        exec_plan = executable_plan[:execution_plan] || executable_plan["execution_plan"]
+        AgentPrompts.agent_c_system_prompt + "\n\nEXECUTABLE PLAN:\n#{JSON.pretty_generate(exec_plan)}"
       end
 
       # Extract trade plan from analysis result
